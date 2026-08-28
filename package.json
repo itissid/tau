@@ -1,6 +1,6 @@
 {
   "name": "tau-mirror",
-  "version": "1.0.9-itissid.1",
+  "version": "1.0.9-itissid.2",
   "description": "Terminal-safe, proxy-aware fork of Tau for mirroring Pi sessions in a browser",
   "type": "module",
   "keywords": [

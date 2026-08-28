@@ -11,6 +11,7 @@ import { SessionSidebar } from './session-sidebar.js';
 import { themes, applyTheme, getCurrentTheme } from './themes.js';
 import { FileBrowser, getFileIcon } from './file-browser.js';
 import { Launcher } from './launcher.js';
+import { PushNotificationController } from './push-notifications.js';
 import {
   apiPath,
   currentWebSocketUrl,
@@ -55,6 +56,11 @@ const tokenUsageEl = document.getElementById('token-usage');
 const scrollBottomBtn = document.getElementById('scroll-bottom-btn');
 const scrollBottomBadge = document.getElementById('scroll-bottom-badge');
 const messagesContainer = document.getElementById('messages');
+const notificationStatusBtn = document.getElementById('notification-status-btn');
+const notificationController = new PushNotificationController({ button: notificationStatusBtn });
+notificationStatusBtn?.addEventListener('click', () => {
+  void notificationController.enableFromGesture();
+});
 
 // State tracking
 let currentStreamingElement = null;
@@ -193,6 +199,8 @@ function showNewMessageBadge() {
 
 wsClient.addEventListener('connected', () => {
   updateConnectionStatus('connected');
+  const pid = instancePid();
+  if (pid !== null) notificationController.reportWebSocketState(pid, true);
   // Fetch model context window size for token % display
   setTimeout(fetchContextWindow, 1000);
 
@@ -200,6 +208,8 @@ wsClient.addEventListener('connected', () => {
 
 wsClient.addEventListener('disconnected', () => {
   updateConnectionStatus('disconnected');
+  const pid = instancePid();
+  if (pid !== null) notificationController.reportWebSocketState(pid, false);
   // A reconnect replays every still-pending request from the authoritative Pi process.
   dialogHandler.clearCurrentDialog();
 });
@@ -1973,11 +1983,12 @@ sidebar.loadSessions().then(() => {
   if (isMirrorMode) updateMirrorLiveIndicator();
 });
 initLauncher();
-
-// Register service worker for PWA
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register(instancePath('sw.js')).catch(() => {});
-}
+void notificationController.initialize().then(() => {
+  const pid = instancePid();
+  if (pid !== null) {
+    notificationController.reportWebSocketState(pid, wsClient.ws?.readyState === WebSocket.OPEN);
+  }
+});
 
 // Dismiss mobile splash screen
 const splash = document.getElementById('mobile-splash');

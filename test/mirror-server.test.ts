@@ -6,6 +6,11 @@ import net from "node:net";
 import test from "node:test";
 import { WebSocket } from "ws";
 
+import {
+  SAFETY_GATE_PENDING_EVENT,
+  SAFETY_GATE_SETTLED_EVENT,
+} from "../extensions/safety-gate-protocol.ts";
+
 async function freePort(): Promise<number> {
   const listener = net.createServer();
   await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
@@ -90,6 +95,7 @@ test("mirror serves Tau, streams Pi state/events, accepts prompt/abort, and stay
   const home = path.join(root, "home");
   const agentDir = path.join(home, ".pi", "agent");
   const instancesDir = path.join(home, ".pi", "tau-instances");
+  const pendingDir = path.join(home, ".pi", "tau-pending");
   const logFile = path.join(agentDir, "logs", "tau-test.log");
   mkdirSync(agentDir, { recursive: true });
   writeFileSync(path.join(agentDir, "settings.json"), "{}\n");
@@ -101,6 +107,7 @@ test("mirror serves Tau, streams Pi state/events, accepts prompt/abort, and stay
     TAU_HOST: process.env.TAU_HOST,
     TAU_MIRROR_PORT: process.env.TAU_MIRROR_PORT,
     TAU_INSTANCES_DIR: process.env.TAU_INSTANCES_DIR,
+    TAU_PENDING_DIR: process.env.TAU_PENDING_DIR,
     TAU_LOG_FILE: process.env.TAU_LOG_FILE,
   };
   Object.assign(process.env, {
@@ -109,6 +116,7 @@ test("mirror serves Tau, streams Pi state/events, accepts prompt/abort, and stay
     TAU_HOST: "0.0.0.0",
     TAU_MIRROR_PORT: String(port),
     TAU_INSTANCES_DIR: instancesDir,
+    TAU_PENDING_DIR: pendingDir,
     TAU_LOG_FILE: logFile,
   });
 
@@ -172,6 +180,29 @@ test("mirror serves Tau, streams Pi state/events, accepts prompt/abort, and stay
     assert.equal(record.port, port);
     assert.equal(record.host, "127.0.0.1");
     assert.equal(record.sessionFile, "/tmp/session.jsonl");
+
+    const pendingRequest = {
+      type: "extension_ui_request",
+      schemaVersion: 1,
+      requestKind: "safety-gate",
+      id: "safety-gate-12345678-1234-4123-8123-123456789abc",
+      method: "confirm",
+      title: "Destructive shell command",
+      message: "bash is paused for safety approval. Review the session before approving.",
+      operation: "bash",
+      createdAt: "2026-08-28T14:00:00.000Z",
+    };
+    fakePi.events.emit(SAFETY_GATE_PENDING_EVENT, pendingRequest);
+    const pendingFiles = readdirSync(pendingDir).filter((file) => file.endsWith(".json"));
+    assert.deepEqual(pendingFiles, [`${process.pid}-${pendingRequest.id}.json`]);
+    assert.doesNotMatch(readFileSync(path.join(pendingDir, pendingFiles[0]!), "utf8"), /SECRET_TOOL_INPUT_MUST_STAY_LOCAL/);
+    fakePi.events.emit(SAFETY_GATE_SETTLED_EVENT, {
+      schemaVersion: 1,
+      id: pendingRequest.id,
+      answer: "deny",
+      source: "terminal",
+    });
+    assert.deepEqual(readdirSync(pendingDir).filter((file) => file.endsWith(".json")), []);
 
     const page = await fetch(`http://127.0.0.1:${port}/`);
     assert.equal(page.status, 200);

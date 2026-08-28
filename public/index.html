@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Tau</title>
   <link rel="icon" type="image/png" href="icons/tau-192.png">
-  <link rel="manifest" href="manifest.json">
+  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -194,6 +194,13 @@
         <div class="settings-row">
           <span class="settings-label">Show thinking</span>
           <button class="settings-toggle on" id="toggle-show-thinking"></button>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Notifications</div>
+        <div class="settings-row">
+          <span class="settings-label">Pending permissions</span>
+          <button class="settings-value-btn" id="notification-status-btn" data-state="loading" type="button">Checking notifications…</button>
         </div>
       </div>
       <div class="settings-section" id="settings-auth-section" style="display:none">

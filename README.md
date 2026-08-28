@@ -1,6 +1,6 @@
 # Tau
 
-> This is the [`itissid/tau`](https://github.com/itissid/tau) fork. It preserves Tau's terminal-owned session model and existing web interface while adding terminal-safe logging, loopback defaults, registry hardening, reverse-proxy path support, and optional remote safety confirmations. See [FORK.md](FORK.md).
+> This is the [`itissid/tau`](https://github.com/itissid/tau) fork. It preserves Tau's terminal-owned session model and existing web interface while adding terminal-safe logging, loopback defaults, registry hardening, reverse-proxy path support, optional remote safety confirmations, and root-scope PWA/Web Push support for a compatible Tau Hub. See [FORK.md](FORK.md).
 
 A web UI that mirrors your [Pi](https://github.com/badlogic/pi-mono) terminal session in the browser. No separate server — it runs as a Pi extension inside your existing process.
 
@@ -82,9 +82,12 @@ Type `/qr` in the terminal to show a QR code and scan it to access via your phon
 - Auto-compaction support
 
 ### PWA
-- Installable as a standalone app on iOS, Android, and macOS
-- Custom app icons
-- Service worker with network-first caching
+- Installable as a standalone app on supported mobile and desktop browsers
+- One root-scope service worker, with automatic removal of stale per-instance registrations
+- Explicit notification opt-in and clear enabled, denied, unavailable, and unsupported states
+- Background safety-permission alerts when used with a compatible Tau Hub Web Push service
+- Notification taps return to the exact `/i/<pid>/` terminal-owned session
+- Custom app icons and network-first runtime caching
 
 ## Configuration
 
@@ -95,6 +98,7 @@ Environment variables (set before starting Pi):
 | `TAU_MIRROR_PORT` | `3001`      | Server port                                                                  |
 | `TAU_HOST`        | `127.0.0.1` | Loopback bind address (`127.0.0.1`, `::1`, or `localhost`)                   |
 | `TAU_STATIC_DIR`  | *(bundled)* | Override static files path                                                   |
+| `TAU_PENDING_DIR` | `~/.pi/tau-pending` | Bounded safety-request markers for a compatible local Tau Hub      |
 | `TAU_DISABLED`    | `0`         | Set to `1` to disable Tau (it stays installed but won't start the server)    |
 | `TAU_USER`        | *(none)*    | HTTP Basic Auth username (both `TAU_USER` and `TAU_PASS` required to enable) |
 | `TAU_PASS`        | *(none)*    | HTTP Basic Auth password                                                     |

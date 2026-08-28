@@ -11,6 +11,8 @@ The fork keeps Tau's existing browser interface and terminal-owned Pi session mo
 - newest-instance discovery support through registry timestamps;
 - live-session indicators derived directly from the Tau registry rather than repeated process scans;
 - an optional event protocol for remotely projecting safety confirmations;
+- atomic, bounded pending-request markers that omit protected tool input;
+- a root-scope PWA worker, explicit Web Push opt-in/status, foreground suppression, and instance-specific notification navigation;
 - exact dependency pins and focused Node tests.
 
 ## Install this fork

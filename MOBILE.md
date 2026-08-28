@@ -34,5 +34,8 @@ Everything customised for mobile (≤768px) compared to the desktop experience.
 
 ## Connection & Lifecycle
 - **Auto-reconnect on return** — detects visibility change and silently reconnects WebSocket instead of showing disconnected state
+- **Root PWA ownership** — one origin-wide worker replaces stale workers previously registered below `/i/<pid>/`
+- **Gesture-only notification opt-in** — Settings reports enabled, denied, unavailable, and unsupported states without prompting on page load
+- **Pending-permission navigation** — a supported Web Push alert returns to the exact terminal-owned `/i/<pid>/` session
 - **Instant scroll on history load** — temporarily disables smooth scrolling so loading a session jumps to bottom without the zoom animation
 - **Refresh button does full page reload** — `location.reload()` on mobile instead of just refreshing the session list

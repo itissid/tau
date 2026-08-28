@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
 import { TauDiagnostics } from "./diagnostics.ts";
 import { liveSessionFiles } from "./live-session-files.ts";
+import { PendingRequestMarkerStore } from "./pending-request-markers.ts";
 import { TauInstanceRegistry, type TauInstanceInfo } from "./registry.ts";
 import {
   SAFETY_GATE_PENDING_EVENT,
@@ -103,6 +104,7 @@ const PI_AGENT_DIR = process.env.PI_CODING_AGENT_DIR || path.join(USER_HOME, ".p
 const SESSIONS_DIR = process.env.PI_CODING_AGENT_SESSION_DIR || path.join(PI_AGENT_DIR, "sessions");
 const diagnostics = new TauDiagnostics();
 const instanceRegistry = new TauInstanceRegistry();
+const pendingMarkerStore = new PendingRequestMarkerStore();
 
 function registerInstance(port: number, sessionFile: string, cwd: string) {
   const info: TauInstanceInfo = {
@@ -143,6 +145,7 @@ const MIME_TYPES: Record<string, string> = {
   ".css": "text/css",
   ".js": "application/javascript",
   ".json": "application/json",
+  ".webmanifest": "application/manifest+json",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".svg": "image/svg+xml",
@@ -213,15 +216,35 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  function publishPendingMarker(request: SafetyGatePendingRequest): void {
+    const instance = getRunningInstances().find((candidate) => candidate.pid === process.pid);
+    if (!instance) return;
+    try {
+      pendingMarkerStore.publish(instance, request);
+    } catch (error) {
+      diagnostics.write("error", "pending_marker_publish_failed", error);
+    }
+  }
+
+  function removePendingMarker(id: string): void {
+    try {
+      pendingMarkerStore.remove(process.pid, id);
+    } catch (error) {
+      diagnostics.write("error", "pending_marker_remove_failed", error);
+    }
+  }
+
   pi.events.on(SAFETY_GATE_PENDING_EVENT, (value) => {
     if (!isSafetyGatePendingRequest(value)) return;
     pendingSafetyRequests.set(value.id, value);
+    publishPendingMarker(value);
     broadcast({ type: "event", event: value });
   });
 
   pi.events.on(SAFETY_GATE_SETTLED_EVENT, (value) => {
     if (!isSafetyGateSettlement(value)) return;
     if (!pendingSafetyRequests.delete(value.id)) return;
+    removePendingMarker(value.id);
     broadcast({
       type: "event",
       event: {
@@ -266,6 +289,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     unregisterInstance();
+    for (const request of pendingSafetyRequests.values()) removePendingMarker(request.id);
     mirrorUrl = "";
     tailscaleUrl = "";
   }
@@ -1708,6 +1732,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
 
       const sessionFile = ctx.sessionManager.getSessionFile() || "";
       registerInstance(selectedPort, sessionFile, ctx.cwd || process.cwd());
+      for (const request of pendingSafetyRequests.values()) publishPendingMarker(request);
       diagnostics.write("info", "server_started", {
         host: HOST,
         port: selectedPort,
