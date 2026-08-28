@@ -10,13 +10,25 @@
  * - Sends full state snapshot on client connect (messages, model, etc.)
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { WebSocketServer, WebSocket } from "ws";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
+import { TauDiagnostics } from "./diagnostics.ts";
+import { liveSessionFiles } from "./live-session-files.ts";
+import { TauInstanceRegistry, type TauInstanceInfo } from "./registry.ts";
+import {
+  SAFETY_GATE_PENDING_EVENT,
+  SAFETY_GATE_RESPONSE_EVENT,
+  SAFETY_GATE_SETTLED_EVENT,
+  isSafetyGatePendingRequest,
+  isSafetyGateSettlement,
+  type SafetyGatePendingRequest,
+} from "./safety-gate-protocol.ts";
 
 // Load tau settings from ~/.pi/agent/settings.json (falls back to env vars)
 function loadTauSettings(): { port: number; host: string; autoStart: boolean; user: string; pass: string; authEnabled?: boolean; projectsDir?: string } {
@@ -27,7 +39,7 @@ function loadTauSettings(): { port: number; host: string; autoStart: boolean; us
   } catch {}
   return {
     port: parseInt(process.env.TAU_MIRROR_PORT || settings.port || "3001"),
-    host: process.env.TAU_HOST || settings.host || "0.0.0.0",
+    host: process.env.TAU_HOST || settings.host || "127.0.0.1",
     autoStart: !(
       process.env.TAU_DISABLED === "1" || process.env.TAU_DISABLED === "true" ||
       settings.disabled === true
@@ -40,14 +52,18 @@ function loadTauSettings(): { port: number; host: string; autoStart: boolean; us
 }
 
 const TAU_SETTINGS = loadTauSettings();
-const PORT = TAU_SETTINGS.port;
-const HOST = TAU_SETTINGS.host;
+const PORT = Number.isInteger(TAU_SETTINGS.port) && TAU_SETTINGS.port > 0 && TAU_SETTINGS.port <= 65535
+  ? TAU_SETTINGS.port
+  : 3001;
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+const HOST = LOOPBACK_HOSTS.has(TAU_SETTINGS.host) ? TAU_SETTINGS.host : "127.0.0.1";
+const HOST_WAS_RESTRICTED = HOST !== TAU_SETTINGS.host;
 const TAU_AUTO_START = TAU_SETTINGS.autoStart;
 const AUTH_USER = TAU_SETTINGS.user;
 const AUTH_PASS = TAU_SETTINGS.pass;
 const AUTH_CONFIGURED = !!(AUTH_USER && AUTH_PASS);
 let authEnabled = AUTH_CONFIGURED && TAU_SETTINGS.authEnabled !== false;
-// @ts-ignore — __dirname is provided by jiti at runtime
+const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = process.env.TAU_STATIC_DIR || findPublicDir();
 
 function findPublicDir(): string {
@@ -60,9 +76,9 @@ function findPublicDir(): string {
       candidates.push(normalized);
     };
 
-    // 1) Common extension-relative paths
-    addCandidate(path.resolve(__dirname, "public"));
-    addCandidate(path.resolve(__dirname, "../public"));
+    // 1) Canonical extension-relative paths
+    addCandidate(path.resolve(EXTENSION_DIR, "public"));
+    addCandidate(path.resolve(EXTENSION_DIR, "../public"));
 
     // 2) Installed package path (for npm-installed extension execution)
     try {
@@ -85,90 +101,39 @@ function findPublicDir(): string {
 const USER_HOME = process.env.HOME || process.env.USERPROFILE || os.homedir();
 const PI_AGENT_DIR = process.env.PI_CODING_AGENT_DIR || path.join(USER_HOME, ".pi", "agent");
 const SESSIONS_DIR = process.env.PI_CODING_AGENT_SESSION_DIR || path.join(PI_AGENT_DIR, "sessions");
-const INSTANCES_DIR = path.join(USER_HOME, ".pi", "tau-instances");
+const diagnostics = new TauDiagnostics();
+const instanceRegistry = new TauInstanceRegistry();
 
-// Instance registry — tracks all running Tau servers
 function registerInstance(port: number, sessionFile: string, cwd: string) {
-  fs.mkdirSync(INSTANCES_DIR, { recursive: true });
-  const info = { port, pid: process.pid, sessionFile, cwd, startedAt: new Date().toISOString() };
-  fs.writeFileSync(path.join(INSTANCES_DIR, `${process.pid}.json`), JSON.stringify(info));
+  const info: TauInstanceInfo = {
+    port,
+    pid: process.pid,
+    sessionFile,
+    cwd,
+    startedAt: new Date().toISOString(),
+    host: HOST,
+  };
+  instanceRegistry.register(info);
 }
 
 function updateInstanceSession(sessionFile: string) {
-  const file = path.join(INSTANCES_DIR, `${process.pid}.json`);
-  if (!fs.existsSync(file)) return;
-  try {
-    const info = JSON.parse(fs.readFileSync(file, "utf8"));
-    info.sessionFile = sessionFile;
-    fs.writeFileSync(file, JSON.stringify(info));
-  } catch {}
+  instanceRegistry.updateSession(process.pid, sessionFile);
 }
 
 function unregisterInstance() {
-  try { fs.unlinkSync(path.join(INSTANCES_DIR, `${process.pid}.json`)); } catch {}
-}
-
-function getRunningInstances(): Array<{ port: number; pid: number; sessionFile: string; cwd: string }> {
-  if (!fs.existsSync(INSTANCES_DIR)) return [];
-  const instances: any[] = [];
-  for (const file of fs.readdirSync(INSTANCES_DIR)) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const info = JSON.parse(fs.readFileSync(path.join(INSTANCES_DIR, file), "utf8"));
-      // Check if process is still alive
-      try {
-        process.kill(info.pid, 0);
-        instances.push(info);
-      } catch {
-        // Process dead — clean up stale file
-        try { fs.unlinkSync(path.join(INSTANCES_DIR, file)); } catch {}
-      }
-    } catch {}
-  }
-  return instances;
-}
-
-/**
- * Kill zombie Tau instances — processes that are alive but orphaned
- * (e.g. tmux pane was killed without session_shutdown firing).
- * A zombie is detected by checking if the process has a controlling terminal.
- * If it doesn't, the HTTP server is the only thing keeping it alive.
- */
-function cleanupZombieInstances() {
-  if (process.platform === "win32") return;
-  if (!fs.existsSync(INSTANCES_DIR)) return;
-  for (const file of fs.readdirSync(INSTANCES_DIR)) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const info = JSON.parse(fs.readFileSync(path.join(INSTANCES_DIR, file), "utf8"));
-      // Skip our own process
-      if (info.pid === process.pid) continue;
-      // Check if process is alive
-      try {
-        process.kill(info.pid, 0);
-      } catch {
-        // Already dead — clean up
-        try { fs.unlinkSync(path.join(INSTANCES_DIR, file)); } catch {}
-        continue;
-      }
-      // Use shared zombie detection
-      if (isZombieProcess(info.pid)) {
-        console.log(`[Mirror] Killing zombie Tau instance (PID ${info.pid}, port ${info.port})`);
-        process.kill(info.pid, "SIGTERM");
-        try { fs.unlinkSync(path.join(INSTANCES_DIR, file)); } catch {}
-      }
-    } catch {}
-  }
-}
-
-function isZombieProcess(pid: number): boolean {
-  if (process.platform === "win32") return false;
   try {
-    const { execSync } = require("node:child_process");
-    const tty = execSync(`ps -o tty= -p ${pid}`, { encoding: "utf8" }).trim();
-    return !tty || tty === "??" || tty === "-";
-  } catch {
-    return true;
+    instanceRegistry.unregister(process.pid);
+  } catch (error) {
+    diagnostics.write("error", "registry_unregister_failed", error);
+  }
+}
+
+function getRunningInstances(): TauInstanceInfo[] {
+  try {
+    return instanceRegistry.listLive();
+  } catch (error) {
+    diagnostics.write("error", "registry_read_failed", error);
+    return [];
   }
 }
 
@@ -218,13 +183,14 @@ export default function (pi: ExtensionAPI) {
   let server: http.Server | null = null;
   let wss: WebSocketServer | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
+  let startPromise: Promise<void> | null = null;
   const clients = new Set<WebSocket>();
 
   // Store latest context reference for use in command handlers
   let latestCtx: ExtensionContext | null = null;
 
-  // Pending RPC-style requests from browser (id -> resolver)
-  const pendingRequests = new Map<string, (response: any) => void>();
+  // In-memory projections only. Protected tool input is deliberately absent from descriptors.
+  const pendingSafetyRequests = new Map<string, SafetyGatePendingRequest>();
 
   // ═══════════════════════════════════════
   // Helper: send to one client
@@ -247,32 +213,74 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  pi.events.on(SAFETY_GATE_PENDING_EVENT, (value) => {
+    if (!isSafetyGatePendingRequest(value)) return;
+    pendingSafetyRequests.set(value.id, value);
+    broadcast({ type: "event", event: value });
+  });
+
+  pi.events.on(SAFETY_GATE_SETTLED_EVENT, (value) => {
+    if (!isSafetyGateSettlement(value)) return;
+    if (!pendingSafetyRequests.delete(value.id)) return;
+    broadcast({
+      type: "event",
+      event: {
+        type: "extension_ui_dismiss",
+        requestKind: "safety-gate",
+        id: value.id,
+        answer: value.answer,
+      },
+    });
+  });
+
   let mirrorUrl = "";
   let tailscaleUrl = "";
 
   // ═══════════════════════════════════════
   // Helper: stop the server
   // ═══════════════════════════════════════
-  function stopServer() {
+  async function closeServerResources() {
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
-    if (wss) {
+
+    const activeWss = wss;
+    wss = null;
+    if (activeWss) {
       for (const client of clients) {
-        client.close();
+        try {
+          client.terminate();
+        } catch {
+          // The socket is already closed.
+        }
       }
       clients.clear();
-      wss.close();
-      wss = null;
+      await new Promise<void>((resolve) => activeWss.close(() => resolve()));
     }
-    if (server) {
-      server.close();
-      server = null;
+
+    const activeServer = server;
+    server = null;
+    if (activeServer?.listening) {
+      await new Promise<void>((resolve) => activeServer.close(() => resolve()));
     }
+
     unregisterInstance();
     mirrorUrl = "";
     tailscaleUrl = "";
+  }
+
+  async function stopServer() {
+    if (startPromise) {
+      try {
+        await startPromise;
+      } catch {
+        // Startup already reported its failure through Pi-safe UI and the log sink.
+      }
+    }
+    const wasRunning = !!server || !!wss;
+    await closeServerResources();
+    if (wasRunning) diagnostics.write("info", "server_stopped");
   }
 
   // ═══════════════════════════════════════
@@ -285,10 +293,9 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Tau is not running", "warning");
         return;
       }
-      stopServer();
-      ctx.ui.setStatus("mirror", "");
+      await stopServer();
+      ctx.ui.setStatus("mirror", undefined);
       ctx.ui.notify("Tau mirror server stopped", "info");
-      console.log("[Mirror] Server stopped via /taustop");
     },
   });
 
@@ -299,8 +306,8 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify(`Tau is already running at ${mirrorUrl}`, "warning");
         return;
       }
-      startServer(ctx);
       ctx.ui.notify("Tau mirror server starting...", "info");
+      await startServer(ctx);
     },
   });
 
@@ -491,6 +498,15 @@ export default function (pi: ExtensionAPI) {
   // Handle commands from browser clients
   // ═══════════════════════════════════════
   async function handleCommand(ws: WebSocket, command: any) {
+    if (!command || typeof command !== "object" || Array.isArray(command)) {
+      sendTo(ws, {
+        type: "response",
+        command: "parse",
+        success: false,
+        error: "Command must be a JSON object",
+      });
+      return;
+    }
     const id = command.id;
     const ctx = latestCtx;
 
@@ -506,6 +522,39 @@ export default function (pi: ExtensionAPI) {
 
     try {
       switch (command.type) {
+        case "extension_ui_response": {
+          const request = typeof command.id === "string"
+            ? pendingSafetyRequests.get(command.id)
+            : undefined;
+          if (!request) {
+            sendTo(ws, error("extension_ui_response", "Safety request is not pending"));
+            break;
+          }
+
+          let answer: "approve" | "deny" | "cancel" | undefined;
+          if (command.cancelled === true && command.confirmed === undefined) answer = "cancel";
+          else if (typeof command.confirmed === "boolean" && command.cancelled !== true) {
+            answer = command.confirmed ? "approve" : "deny";
+          }
+          if (!answer) {
+            diagnostics.write("warning", "invalid_safety_response", { requestId: request.id });
+            sendTo(ws, error("extension_ui_response", "Malformed safety response"));
+            break;
+          }
+
+          pi.events.emit(SAFETY_GATE_RESPONSE_EVENT, {
+            schemaVersion: 1,
+            id: request.id,
+            answer,
+          });
+          if (pendingSafetyRequests.has(request.id)) {
+            sendTo(ws, error("extension_ui_response", "Safety response was not accepted"));
+          } else {
+            sendTo(ws, success("extension_ui_response", { accepted: true }));
+          }
+          break;
+        }
+
         // ─── Prompting ───
         case "prompt": {
           if (ctx && !ctx.isIdle()) {
@@ -522,13 +571,13 @@ export default function (pi: ExtensionAPI) {
               const content: any[] = [{ type: "text", text: command.message || "(see attached image)" }];
               for (const img of command.images) {
                 if (!img.data || typeof img.data !== "string") {
-                  console.error("[mirror-server] Skipping image: missing or invalid data");
+                  diagnostics.write("warning", "invalid_browser_image", { reason: "missing_or_invalid_data" });
                   continue;
                 }
                 // Strip data URL prefix if accidentally included
                 const data = img.data.includes(",") ? img.data.split(",")[1] : img.data;
                 const mimeType = (validMimes.includes(img.mimeType) ? img.mimeType : "image/png") as "image/png" | "image/jpeg" | "image/gif" | "image/webp";
-                console.log(`[mirror-server] Image: mimeType=${mimeType}, dataLen=${data.length}, rawMimeType=${img.mimeType}`);
+                diagnostics.write("debug", "browser_image_received", { mimeType, dataLength: data.length });
                 const imageBlock = {
                   type: "image" as const,
                   data: data,
@@ -536,7 +585,7 @@ export default function (pi: ExtensionAPI) {
                 };
                 // Defensive: verify mimeType is actually set (debug crash where it was missing)
                 if (!imageBlock.mimeType) {
-                  console.error(`[mirror-server] BUG: mimeType is falsy after assignment! img.mimeType=${img.mimeType}, falling back to image/png`);
+                  diagnostics.write("error", "browser_image_mime_missing", { fallback: "image/png" });
                   imageBlock.mimeType = "image/png";
                 }
                 content.push(imageBlock);
@@ -1026,15 +1075,15 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             const { exec } = await import("node:child_process");
             const safe = fp.replace(/'/g, "''").replace(/"/g, '');
             exec(`powershell -NoProfile -WindowStyle Hidden -Command "& { $wsh = New-Object -ComObject WScript.Shell; $wsh.Run('explorer \\"${safe}\\"', 1, $false) }"`, (err) => {
-              if (err) console.error("[Mirror] open failed:", err.message);
+              if (err) diagnostics.write("error", "native_open_failed", err);
             });
           } else if (process.platform === "darwin") {
             execFile("open", [fp], (err) => {
-              if (err) console.error("[Mirror] open failed:", err.message);
+              if (err) diagnostics.write("error", "native_open_failed", err);
             });
           } else {
             execFile("xdg-open", [fp], (err) => {
-              if (err) console.error("[Mirror] open failed:", err.message);
+              if (err) diagnostics.write("error", "native_open_failed", err);
             });
           }
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -1124,31 +1173,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   // Sessions list endpoint
   // ═══════════════════════════════════════
   function getTmuxSessionFiles(): Set<string> {
-    if (process.platform === "win32") return new Set();
-    try {
-      const { execSync } = require("node:child_process");
-      // Get tmux pane PIDs
-      const paneOutput = execSync("tmux list-panes -a -F '#{pane_pid}' 2>/dev/null", { encoding: "utf8" });
-      const tmuxFiles = new Set<string>();
-
-      for (const shellPid of paneOutput.trim().split("\n").filter(Boolean)) {
-        try {
-          // Find Pi (node) processes that are children of tmux shells
-          const children = execSync(`pgrep -P ${shellPid} 2>/dev/null`, { encoding: "utf8" });
-          for (const pid of children.trim().split("\n").filter(Boolean)) {
-            // Check what .jsonl files this process has open
-            const lsofOut = execSync(`lsof -p ${pid} 2>/dev/null | grep '\\.jsonl'`, { encoding: "utf8" });
-            for (const line of lsofOut.trim().split("\n").filter(Boolean)) {
-              const match = line.match(/\/.+\.jsonl$/);
-              if (match) tmuxFiles.add(match[0]);
-            }
-          }
-        } catch { /* no match */ }
-      }
-      return tmuxFiles;
-    } catch {
-      return new Set();
-    }
+    return liveSessionFiles(getRunningInstances());
   }
 
   function serveProjectsList(res: http.ServerResponse) {
@@ -1538,32 +1563,59 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
   // ═══════════════════════════════════════
   // Start server function (reusable)
   // ═══════════════════════════════════════
-  function startServer(ctx: ExtensionContext) {
-    if (server) return; // Already running
+  async function listen(serverToStart: http.Server, port: number): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        serverToStart.off("listening", onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        serverToStart.off("error", onError);
+        resolve();
+      };
+      serverToStart.once("error", onError);
+      serverToStart.once("listening", onListening);
+      serverToStart.listen(port, HOST);
+    });
+  }
 
-    // Clean up zombie instances from killed tmux panes etc.
-    cleanupZombieInstances();
+  async function startServerInternal(ctx: ExtensionContext) {
+    // Reading the registry also removes malformed records and records for dead PIDs.
+    getRunningInstances();
 
-    server = http.createServer(serveStaticFile);
-    wss = new WebSocketServer({ noServer: true });
+    if (HOST_WAS_RESTRICTED) {
+      diagnostics.write("warning", "host_restricted_to_loopback", {
+        requestedHost: TAU_SETTINGS.host,
+        boundHost: HOST,
+      });
+      ctx.ui.notify(
+        `Tau ignored non-loopback host ${TAU_SETTINGS.host}; binding to ${HOST}`,
+        "warning",
+      );
+    }
 
-    server.on("upgrade", (request, socket, head) => {
+    const httpServer = http.createServer(serveStaticFile);
+    const webSocketServer = new WebSocketServer({ noServer: true });
+    server = httpServer;
+    wss = webSocketServer;
+
+    httpServer.on("upgrade", (request, socket, head) => {
       if (authEnabled && !checkBasicAuth(request)) {
         socket.write("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Tau\"\r\n\r\n");
         socket.destroy();
         return;
       }
       if (request.url === "/ws") {
-        wss!.handleUpgrade(request, socket, head, (ws) => {
-          wss!.emit("connection", ws, request);
+        webSocketServer.handleUpgrade(request, socket, head, (ws) => {
+          webSocketServer.emit("connection", ws, request);
         });
       } else {
         socket.destroy();
       }
     });
 
-    wss.on("connection", (ws) => {
-      console.log("[Mirror] Browser client connected");
+    webSocketServer.on("connection", (ws) => {
+      diagnostics.write("info", "browser_connected");
       clients.add(ws);
       (ws as any).isAlive = true;
 
@@ -1571,37 +1623,37 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         (ws as any).isAlive = true;
       });
 
-      // Send initial state
       sendTo(ws, { type: "state", isStreaming: false, mode: "mirror" });
 
-      // Immediately send state snapshot
       if (latestCtx) {
-        buildStateSnapshot(latestCtx).then((snapshot) => {
-          sendTo(ws, snapshot);
-        });
+        buildStateSnapshot(latestCtx)
+          .then((snapshot) => sendTo(ws, snapshot))
+          .catch((error) => diagnostics.write("error", "state_snapshot_failed", error));
+      }
+      for (const request of pendingSafetyRequests.values()) {
+        sendTo(ws, { type: "event", event: request });
       }
 
       ws.on("message", (data) => {
         try {
           const command = JSON.parse(data.toString());
-          handleCommand(ws, command);
-        } catch (e) {
-          console.error("[Mirror] Failed to parse client message:", e);
+          void handleCommand(ws, command);
+        } catch (error) {
+          diagnostics.write("warning", "browser_message_parse_failed", error);
         }
       });
 
       ws.on("close", () => {
-        console.log("[Mirror] Browser client disconnected");
+        diagnostics.write("info", "browser_disconnected");
         clients.delete(ws);
       });
 
-      ws.on("error", (e) => {
-        console.error("[Mirror] Client error:", e);
+      ws.on("error", (error) => {
+        diagnostics.write("error", "browser_client_error", error);
         clients.delete(ws);
       });
     });
 
-    // Heartbeat keeps mobile/Tailscale sessions alive and removes stale clients.
     heartbeatTimer = setInterval(() => {
       for (const client of clients) {
         if (client.readyState !== WebSocket.OPEN) {
@@ -1610,103 +1662,85 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         }
 
         if (!(client as any).isAlive) {
-          try { client.terminate(); } catch {}
+          try {
+            client.terminate();
+          } catch {
+            // The socket is already closed.
+          }
           clients.delete(client);
           continue;
         }
 
         (client as any).isAlive = false;
-        try { client.ping(); } catch {}
+        try {
+          client.ping();
+        } catch (error) {
+          diagnostics.write("warning", "browser_ping_failed", error);
+        }
       }
     }, 20000);
 
-    const tryListen = (port: number, maxAttempts = 10) => {
-      server!.listen(port, HOST, () => {
-        onListening(port);
-      });
-      server!.once("error", (err: any) => {
-        if (err.code === "EADDRINUSE" && port < PORT + maxAttempts) {
-          // Check if a stale Tau instance owns this port and kill it
-          const instances = getRunningInstances();
-          const stale = instances.find(i => i.port === port && i.pid !== process.pid);
-          if (stale && isZombieProcess(stale.pid)) {
-            console.log(`[Mirror] Port ${port} in use by stale Tau instance (PID ${stale.pid}), killing...`);
-            try { process.kill(stale.pid, "SIGTERM"); } catch {}
-            // Wait briefly then retry the same port
-            setTimeout(() => {
-              server!.removeAllListeners("error");
-              tryListen(port, maxAttempts);
-            }, 500);
-            return;
-          }
-          console.log(`[Mirror] Port ${port} in use, trying ${port + 1}...`);
-          server!.removeAllListeners("error");
-          tryListen(port + 1, maxAttempts);
-        } else {
-          console.error(`[Mirror] Failed to start server:`, err.message);
-        }
-      });
-    };
-
-    const onListening = (port: number) => {
-      const isLoopback = HOST === "127.0.0.1" || HOST === "::1" || HOST === "localhost";
-
-      let localIp = "localhost";
-      let tailscaleIp = "";
-
-      if (!isLoopback) {
-        // Get local IP for display — prefer en0/en1 (WiFi/Ethernet) over bridges/VPNs
-        const nets = require("node:os").networkInterfaces();
-        let fallbackIp = "";
-        const preferred = ["en0", "en1"];
-        for (const name of preferred) {
-          for (const net of nets[name] || []) {
-            if (net.family === "IPv4" && !net.internal) {
-              localIp = net.address;
-              break;
-            }
-          }
-          if (localIp !== "localhost") break;
-        }
-        if (localIp === "localhost") {
-          for (const name of Object.keys(nets)) {
-            if (name.startsWith("bridge") || name.startsWith("utun") || name.startsWith("lo")) continue;
-            for (const net of nets[name] || []) {
-              if (net.family === "IPv4" && !net.internal && (net.address.startsWith("192.168.") || net.address.startsWith("10."))) {
-                localIp = net.address;
-                break;
-              }
-            }
-            if (localIp !== "localhost") break;
-          }
-        }
-        if (localIp === "localhost" && fallbackIp) localIp = fallbackIp;
-
-        // Detect Tailscale IP (100.x.x.x CGNAT range)
-        for (const name of Object.keys(nets)) {
-          for (const net of nets[name] || []) {
-            if (net.family === "IPv4" && !net.internal && net.address.startsWith("100.")) {
-              tailscaleIp = net.address;
-              break;
-            }
-          }
-          if (tailscaleIp) break;
+    try {
+      let selectedPort: number | null = null;
+      for (let offset = 0; offset <= 10 && PORT + offset <= 65535; offset++) {
+        const candidatePort = PORT + offset;
+        try {
+          await listen(httpServer, candidatePort);
+          selectedPort = candidatePort;
+          break;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "EADDRINUSE") throw error;
+          diagnostics.write("info", "port_collision", {
+            port: candidatePort,
+            nextPort: candidatePort + 1 <= 65535 ? candidatePort + 1 : null,
+          });
         }
       }
 
-      mirrorUrl = `http://${localIp}:${port}`;
-      tailscaleUrl = tailscaleIp ? `http://${tailscaleIp}:${port}` : "";
-      console.log(`[Mirror] Tau mirror server running on ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}`);
-      ctx.ui.setStatus("mirror", `Mirror: ${localIp}:${port}${tailscaleIp ? ` • TS: ${tailscaleIp}:${port}` : ""}`);
+      if (selectedPort === null) {
+        throw new Error(`No available Tau mirror port in ${PORT}-${Math.min(PORT + 10, 65535)}`);
+      }
 
-      // Register this instance
+      const displayHost = HOST === "::1" ? "[::1]" : HOST;
+      mirrorUrl = `http://${displayHost}:${selectedPort}`;
+      tailscaleUrl = "";
+
       const sessionFile = ctx.sessionManager.getSessionFile() || "";
-      registerInstance(port, sessionFile, ctx.cwd || process.cwd());
+      registerInstance(selectedPort, sessionFile, ctx.cwd || process.cwd());
+      diagnostics.write("info", "server_started", {
+        host: HOST,
+        port: selectedPort,
+        url: mirrorUrl,
+      });
 
-      ctx.ui.notify(`Tau mirror: ${mirrorUrl}${tailscaleUrl ? `  •  Tailscale: ${tailscaleUrl}` : ""}  •  /qr for QR code`, "info");
-    };
+      ctx.ui.setStatus("mirror", `Mirror: ${displayHost}:${selectedPort}`);
+      ctx.ui.notify(`Tau mirror: ${mirrorUrl}  •  /qr for QR code`, "info");
 
-    tryListen(PORT);
+      httpServer.on("error", (error) => {
+        diagnostics.write("error", "server_runtime_error", error);
+        ctx.ui.notify(`Tau mirror server error: ${error.message}`, "error");
+      });
+    } catch (error) {
+      diagnostics.write("error", "server_start_failed", error);
+      await closeServerResources();
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.setStatus("mirror", undefined);
+      ctx.ui.notify(`Tau mirror failed to start: ${message}`, "error");
+      throw error;
+    }
+  }
+
+  async function startServer(ctx: ExtensionContext) {
+    if (startPromise) return startPromise;
+    if (server) return;
+
+    startPromise = startServerInternal(ctx);
+    try {
+      await startPromise;
+    } finally {
+      startPromise = null;
+    }
   }
 
   // ═══════════════════════════════════════
@@ -1718,24 +1752,30 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     // Skip mirror startup in subagent child processes
     // (pi-subagents sets PI_SUBAGENT_CHILD=1; child processes loading Tau
     // should not attempt to start their own mirror server)
+    if (ctx.mode !== "tui") {
+      diagnostics.write("debug", "auto_start_skipped_non_tui", { mode: ctx.mode });
+      return;
+    }
+
     if (process.env.PI_SUBAGENT_CHILD === "1") {
-      console.log("[Mirror] Subagent child process detected (PI_SUBAGENT_CHILD=1), skipping auto-start.");
+      diagnostics.write("debug", "auto_start_skipped_subagent");
       return;
     }
 
     if (!TAU_AUTO_START) {
-      console.log("[Mirror] Tau auto-start disabled (TAU_DISABLED=1). Use /tau-start to start manually.");
+      diagnostics.write("info", "auto_start_disabled");
       return;
     }
 
-    startServer(ctx);
+    await startServer(ctx);
   });
 
   // ═══════════════════════════════════════
   // Cleanup on shutdown
   // ═══════════════════════════════════════
-  pi.on("session_shutdown", async () => {
-    stopServer();
-    console.log("[Mirror] Server shut down");
+  pi.on("session_shutdown", async (_event, ctx) => {
+    await stopServer();
+    pendingSafetyRequests.clear();
+    ctx.ui.setStatus("mirror", undefined);
   });
 }

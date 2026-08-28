@@ -1,7 +1,8 @@
 {
   "name": "tau-mirror",
-  "version": "1.0.9",
-  "description": "Web UI that mirrors your Pi terminal session in the browser",
+  "version": "1.0.9-itissid.1",
+  "description": "Terminal-safe, proxy-aware fork of Tau for mirroring Pi sessions in a browser",
+  "type": "module",
   "keywords": [
     "pi",
     "pi-package",
@@ -10,19 +11,25 @@
     "mirror"
   ],
   "author": "deflating",
+  "contributors": [
+    "itissid"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/deflating/tau.git"
+    "url": "https://github.com/itissid/tau.git"
   },
   "pi": {
     "extensions": [
       "./extensions/mirror-server.ts"
     ],
-    "image": "https://raw.githubusercontent.com/deflating/tau/main/docs/images/dark.png"
+    "image": "https://raw.githubusercontent.com/itissid/tau/main/docs/images/dark.png"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts"
   },
   "dependencies": {
-    "ws": "^8.16.0",
-    "qrcode": "^1.5.0"
+    "qrcode": "1.5.4",
+    "ws": "8.21.3"
   }
 }

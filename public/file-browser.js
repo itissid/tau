@@ -2,6 +2,8 @@
  * File Browser — right sidebar file tree with drag-and-drop
  */
 
+import { apiPath } from './url-base.js';
+
 const FILE_ICONS = {
   // Folders
   directory: '📁',
@@ -53,8 +55,8 @@ export class FileBrowser {
 
     try {
       const url = dirPath
-        ? `/api/files?path=${encodeURIComponent(dirPath)}`
-        : '/api/files';
+        ? `${apiPath('files')}?path=${encodeURIComponent(dirPath)}`
+        : apiPath('files');
       const res = await fetch(url);
       const data = await res.json();
 
@@ -141,7 +143,7 @@ export class FileBrowser {
 
   async openNatively(filePath) {
     try {
-      await fetch('/api/open', {
+      await fetch(apiPath('open'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filePath }),

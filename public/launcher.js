@@ -2,6 +2,8 @@
  * Launcher — project directory picker with visual bubbles
  */
 
+import { apiPath } from './url-base.js';
+
 export class Launcher {
   constructor(container, onLaunch) {
     this.container = container;
@@ -12,7 +14,7 @@ export class Launcher {
   async load() {
     this.container.innerHTML = '<div class="launcher-loading">Loading projects…</div>';
     try {
-      const res = await fetch('/api/projects');
+      const res = await fetch(apiPath('projects'));
       const data = await res.json();
       this.projects = data.projects || [];
       this.render();

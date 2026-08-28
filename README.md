@@ -1,5 +1,7 @@
 # Tau
 
+> This is the [`itissid/tau`](https://github.com/itissid/tau) fork. It preserves Tau's terminal-owned session model and existing web interface while adding terminal-safe logging, loopback defaults, registry hardening, reverse-proxy path support, and optional remote safety confirmations. See [FORK.md](FORK.md).
+
 A web UI that mirrors your [Pi](https://github.com/badlogic/pi-mono) terminal session in the browser. No separate server — it runs as a Pi extension inside your existing process.
 
 ![Tau dark mode](docs/images/dark.png)
@@ -28,7 +30,7 @@ pi install npm:tau-mirror
 Or from git:
 
 ```bash
-pi install git:github.com/deflating/tau
+pi install git:github.com/itissid/tau
 ```
 
 ## Usage
@@ -91,7 +93,7 @@ Environment variables (set before starting Pi):
 | Variable          | Default     | Description                                                                  |
 |-------------------|-------------|------------------------------------------------------------------------------|
 | `TAU_MIRROR_PORT` | `3001`      | Server port                                                                  |
-| `TAU_HOST`        | `0.0.0.0`   | Bind address. Set to `127.0.0.1` to restrict to localhost only               |
+| `TAU_HOST`        | `127.0.0.1` | Loopback bind address (`127.0.0.1`, `::1`, or `localhost`)                   |
 | `TAU_STATIC_DIR`  | *(bundled)* | Override static files path                                                   |
 | `TAU_DISABLED`    | `0`         | Set to `1` to disable Tau (it stays installed but won't start the server)    |
 | `TAU_USER`        | *(none)*    | HTTP Basic Auth username (both `TAU_USER` and `TAU_PASS` required to enable) |

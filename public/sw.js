@@ -1,25 +1,29 @@
 // Tau Service Worker — minimal, just enables PWA install
 // No aggressive caching since Tau connects to a live local server
 
-const CACHE_NAME = 'tau-v1';
+const CACHE_NAME = 'tau-v2';
+const scopeUrl = new URL(self.registration.scope);
+const scopePath = scopeUrl.pathname.endsWith('/') ? scopeUrl.pathname : `${scopeUrl.pathname}/`;
+const scopedUrl = (path = '') => new URL(path, scopeUrl).href;
 
 // Cache only the app shell on install
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll([
-        '/',
-        '/style.css',
-        '/app.js',
-        '/state.js',
-        '/themes.js',
-        '/markdown.js',
-        '/message-renderer.js',
-        '/tool-card.js',
-        '/dialogs.js',
-        '/session-sidebar.js',
-        '/websocket-client.js',
-        '/manifest.json',
+        scopedUrl(),
+        scopedUrl('style.css'),
+        scopedUrl('app.js'),
+        scopedUrl('url-base.js'),
+        scopedUrl('state.js'),
+        scopedUrl('themes.js'),
+        scopedUrl('markdown.js'),
+        scopedUrl('message-renderer.js'),
+        scopedUrl('tool-card.js'),
+        scopedUrl('dialogs.js'),
+        scopedUrl('session-sidebar.js'),
+        scopedUrl('websocket-client.js'),
+        scopedUrl('manifest.json'),
       ]);
     })
   );
@@ -41,9 +45,13 @@ self.addEventListener('activate', (event) => {
 // Network-first strategy — always try live server, fall back to cache
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
+  const relativePath = url.pathname.startsWith(scopePath)
+    ? url.pathname.slice(scopePath.length)
+    : null;
+  const tauPath = relativePath ?? url.pathname.replace(/^\/i\/[1-9]\d+\//, '');
 
-  // Don't cache API/WebSocket requests
-  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ws')) {
+  // Don't cache API/WebSocket requests, including after an in-page PID switch.
+  if (tauPath.startsWith('api/') || tauPath === 'ws') {
     return;
   }
 

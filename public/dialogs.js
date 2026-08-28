@@ -7,6 +7,7 @@ export class DialogHandler {
     this.container = container;
     this.wsClient = wsClient;
     this.currentDialog = null;
+    this.currentRequestId = null;
     this.timeoutId = null;
   }
 
@@ -165,6 +166,7 @@ export class DialogHandler {
 
   showDialog(dialogElement, timeout, requestId) {
     this.currentDialog = dialogElement;
+    this.currentRequestId = requestId;
     this.container.innerHTML = '';
     this.container.appendChild(dialogElement);
     this.container.classList.remove('hidden');
@@ -186,15 +188,24 @@ export class DialogHandler {
     this.container.innerHTML = '';
     this.container.classList.add('hidden');
     this.currentDialog = null;
+    this.currentRequestId = null;
+  }
+
+  dismiss(id) {
+    if (this.currentRequestId !== id) return false;
+    this.clearCurrentDialog();
+    return true;
   }
 
   respond(id, response) {
+    if (this.currentRequestId !== id) return false;
     this.clearCurrentDialog();
     this.wsClient.send({
       type: 'extension_ui_response',
       id,
       ...response
     });
+    return true;
   }
 
   escapeHtml(text) {
