@@ -177,6 +177,12 @@ ln -s "$(pwd)" ~/.pi/agent/extensions/tau-mirror
 
 Edit files in `public/` and refresh the browser for frontend-only changes. Restart Pi after extension changes. See [`hub/README.md`](hub/README.md) for Hub tests and image builds.
 
+### Making checkout changes available to Pi sessions
+
+`~/.pi/agent/extensions/tau-mirror` is a global whole-directory link to this checkout, so Pi discovers the same Tau source regardless of which project directory under `~/workspace` starts the session. New Pi processes load the checkout's current extension code automatically.
+
+Already-running Pi processes keep the extension modules and server lifecycle they loaded at startup. Restart those Pi sessions after changing `extensions/` or other extension-owned behavior; a clean restart is safer than hot reload for replacing Tau's in-process listener. Refresh the browser after `public/` changes and account for service-worker caching. Tau Hub is a separate process: changes under `hub/` require rebuilding/recreating the Hub deployment and do not require restarting unrelated Pi sessions.
+
 ## License
 
 MIT
