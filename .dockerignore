@@ -1,0 +1,7 @@
+.git
+node_modules
+hub/node_modules
+test
+hub/test
+docs
+*.md

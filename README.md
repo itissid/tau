@@ -19,7 +19,8 @@ Tau connects to your running Pi TUI and gives you a second view in the browser. 
 - **Live mirroring** — streams messages, tool calls, and thinking blocks in real-time
 - **Works on any device** — open it on your phone, tablet, or another monitor
 - **Session browser** — view history from any past session
-- **No extra process** — the Pi extension *is* the server
+- **No extra process for direct use** — the Pi extension *is* the per-session mirror server
+- **Optional Tau Hub** — a separately managed single-origin proxy can discover and route several terminal-owned mirrors; see [`hub/README.md`](hub/README.md)
 
 ## Install
 
@@ -158,15 +159,23 @@ There's no separate server to run. The extension auto-loads when Pi starts and s
 
 ## Development
 
-Clone and point the extension at the local static files:
+Install the extension and Hub dependencies, then run their focused test suites:
 
 ```bash
-git clone https://github.com/deflating/tau.git
+git clone https://github.com/itissid/tau.git
 cd tau
-TAU_STATIC_DIR=$(pwd)/public pi
+npm ci --ignore-scripts
+npm --prefix hub ci --ignore-scripts
+npm test
 ```
 
-Edit the files in `public/` — refresh the browser to see changes.
+Point Pi directly at the checkout while developing:
+
+```bash
+ln -s "$(pwd)" ~/.pi/agent/extensions/tau-mirror
+```
+
+Edit files in `public/` and refresh the browser for frontend-only changes. Restart Pi after extension changes. See [`hub/README.md`](hub/README.md) for Hub tests and image builds.
 
 ## License
 

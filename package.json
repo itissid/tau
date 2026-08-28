@@ -26,7 +26,11 @@
     "image": "https://raw.githubusercontent.com/itissid/tau/main/docs/images/dark.png"
   },
   "scripts": {
-    "test": "node --test test/*.test.ts"
+    "test": "npm run test:node && npm run test:hub",
+    "test:node": "node --test test/*.test.ts",
+    "test:hub": "npm --prefix hub test",
+    "test:pty": "python3 test/pty-learning-test.py",
+    "test:mirrors": "python3 hub/test/real-mirrors-learning-test.py"
   },
   "dependencies": {
     "qrcode": "1.5.4",

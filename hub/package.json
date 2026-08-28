@@ -1,0 +1,17 @@
+{
+  "name": "tau-hub",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Single-origin registry-aware proxy for terminal-owned Tau mirrors",
+  "type": "module",
+  "scripts": {
+    "start": "node server.ts",
+    "test": "node --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "ws": "8.21.3"
+  },
+  "dependencies": {
+    "web-push": "3.6.7"
+  }
+}
