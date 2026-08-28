@@ -21,6 +21,27 @@ async function freePort(): Promise<number> {
   return port;
 }
 
+async function reserveContiguousPorts(count: number): Promise<{ basePort: number; servers: net.Server[] }> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const candidate = 20_000 + Math.floor(Math.random() * (45_000 - count));
+    const servers: net.Server[] = [];
+    try {
+      for (let offset = 0; offset < count; offset++) {
+        const server = net.createServer();
+        await new Promise<void>((resolve, reject) => {
+          server.once("error", reject);
+          server.listen(candidate + offset, "127.0.0.1", resolve);
+        });
+        servers.push(server);
+      }
+      return { basePort: candidate, servers };
+    } catch {
+      await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+    }
+  }
+  throw new Error(`Unable to reserve ${count} contiguous test ports`);
+}
+
 class FakePi {
   handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
   commands = new Map<string, any>();
@@ -292,6 +313,86 @@ test("mirror serves Tau, streams Pi state/events, accepts prompt/abort, and stay
     console.log = originalConsole.log;
     console.error = originalConsole.error;
     console.warn = originalConsole.warn;
+    for (const [key, value] of Object.entries(previousEnvironment)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("mirror falls back to an OS-assigned port when all preferred ports are occupied", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "tau-mirror-port-fallback-"));
+  const home = path.join(root, "home");
+  const agentDir = path.join(home, ".pi", "agent");
+  const instancesDir = path.join(home, ".pi", "tau-instances");
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(path.join(agentDir, "settings.json"), "{}\n");
+  const { basePort, servers: blockers } = await reserveContiguousPorts(11);
+
+  const previousEnvironment = {
+    HOME: process.env.HOME,
+    PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+    TAU_HOST: process.env.TAU_HOST,
+    TAU_MIRROR_PORT: process.env.TAU_MIRROR_PORT,
+    TAU_INSTANCES_DIR: process.env.TAU_INSTANCES_DIR,
+  };
+  Object.assign(process.env, {
+    HOME: home,
+    PI_CODING_AGENT_DIR: agentDir,
+    TAU_HOST: "127.0.0.1",
+    TAU_MIRROR_PORT: String(basePort),
+    TAU_INSTANCES_DIR: instancesDir,
+  });
+
+  const fakePi = new FakePi();
+  const notifications: Array<{ message: string; type: string }> = [];
+  const ctx = {
+    mode: "tui",
+    hasUI: true,
+    cwd: "/tmp/tau-port-fallback",
+    ui: {
+      notify(message: string, type: string) { notifications.push({ message, type }); },
+      setStatus() {},
+    },
+    sessionManager: {
+      getSessionFile: () => "/tmp/fallback-session.jsonl",
+      getEntries: () => [],
+    },
+    model: { provider: "test", id: "model" },
+    modelRegistry: { getAvailable: async () => [] },
+    getContextUsage: () => undefined,
+    isIdle: () => true,
+    abort() {},
+    compact() {},
+  };
+
+  let started = false;
+  try {
+    const extensionModule = await import(`../extensions/mirror-server.ts?port-fallback=${Date.now()}`);
+    extensionModule.default(fakePi as any);
+    await fakePi.emit("session_start", { reason: "startup" }, ctx);
+    started = true;
+
+    const records = readdirSync(instancesDir).filter((file) => file.endsWith(".json"));
+    assert.deepEqual(records, [`${process.pid}.json`]);
+    const record = JSON.parse(readFileSync(path.join(instancesDir, records[0]!), "utf8"));
+    assert.ok(record.port > 0 && record.port <= 65_535);
+    assert.ok(record.port < basePort || record.port > basePort + 10);
+    assert.equal((await fetch(`http://127.0.0.1:${record.port}/api/health`)).status, 200);
+    assert.ok(notifications.some(({ message }) => message.includes(`127.0.0.1:${record.port}`)));
+    const diagnostics = readFileSync(path.join(agentDir, "logs", "tau-mirror.log"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.ok(diagnostics.some((entry) => (
+      entry.event === "preferred_port_range_exhausted"
+      && entry.details?.preferredStart === basePort
+      && entry.details?.preferredEnd === basePort + 10
+      && entry.details?.selectedPort === record.port
+    )));
+  } finally {
+    if (started) await fakePi.emit("session_shutdown", { reason: "quit" }, ctx);
+    await Promise.all(blockers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
     for (const [key, value] of Object.entries(previousEnvironment)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

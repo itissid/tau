@@ -1723,7 +1723,17 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
       }
 
       if (selectedPort === null) {
-        throw new Error(`No available Tau mirror port in ${PORT}-${Math.min(PORT + 10, 65535)}`);
+        await listen(httpServer, 0);
+        const assignedAddress = httpServer.address();
+        if (!assignedAddress || typeof assignedAddress === "string") {
+          throw new Error("Tau mirror received no OS-assigned fallback port");
+        }
+        selectedPort = assignedAddress.port;
+        diagnostics.write("info", "preferred_port_range_exhausted", {
+          preferredStart: PORT,
+          preferredEnd: Math.min(PORT + 10, 65_535),
+          selectedPort,
+        });
       }
 
       const displayHost = HOST === "::1" ? "[::1]" : HOST;
