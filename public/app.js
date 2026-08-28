@@ -61,6 +61,12 @@ const notificationController = new PushNotificationController({ button: notifica
 notificationStatusBtn?.addEventListener('click', () => {
   void notificationController.enableFromGesture();
 });
+navigator.serviceWorker?.addEventListener('message', (event) => {
+  if (event.data?.type !== 'tau-query-client-state') return;
+  const pid = instancePid();
+  if (pid === null || event.data.pid !== pid) return;
+  event.ports[0]?.postMessage({ webSocketConnected: wsClient.ws?.readyState === WebSocket.OPEN });
+});
 
 // State tracking
 let currentStreamingElement = null;

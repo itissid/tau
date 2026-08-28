@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+import { MessageChannel } from "node:worker_threads";
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const workerSource = readFileSync(path.resolve(directory, "../public/sw.js"), "utf8");
@@ -48,7 +49,10 @@ function workerHarness(initialClients: any[] = []) {
     URL,
     Response,
     Map,
+    MessageChannel,
     Promise,
+    clearTimeout,
+    setTimeout,
   });
 
   const dispatch = async (type: string, values: Record<string, unknown>) => {
@@ -122,6 +126,23 @@ test("root service worker suppresses a duplicate system alert only for a foregro
   });
   await harness.dispatch("push", { data: { json: () => payload } });
   assert.equal(harness.notifications.length, 1);
+});
+
+test("foreground suppression queries a visible page after the service worker restarts", async () => {
+  const liveClient = {
+    id: "client-after-worker-restart",
+    url: "https://tau.example.test/i/4101/",
+    visibilityState: "visible",
+    focused: true,
+    postMessage(message: any, ports: any[]) {
+      if (message.type === "tau-query-client-state") {
+        ports[0].postMessage({ webSocketConnected: true });
+      }
+    },
+  };
+  const harness = workerHarness([liveClient]);
+  await harness.dispatch("push", { data: { json: () => payload } });
+  assert.deepEqual(harness.notifications, []);
 });
 
 test("notification click navigates or opens the exact terminal-owned Pi instance", async () => {

@@ -20,6 +20,32 @@ function isPendingPush(value) {
     value.url === `/i/${value.pid}/`;
 }
 
+function queryLiveClient(client, pid) {
+  const known = liveClientState.get(client.id);
+  if (known?.pid === pid) return Promise.resolve(known.webSocketConnected);
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    const timeout = setTimeout(() => {
+      channel.port1.close();
+      resolve(false);
+    }, 150);
+    channel.port1.onmessage = (event) => {
+      clearTimeout(timeout);
+      channel.port1.close();
+      const connected = event.data?.webSocketConnected === true;
+      liveClientState.set(client.id, { pid, webSocketConnected: connected });
+      resolve(connected);
+    };
+    try {
+      client.postMessage({ type: 'tau-query-client-state', pid }, [channel.port2]);
+    } catch {
+      clearTimeout(timeout);
+      channel.port1.close();
+      resolve(false);
+    }
+  });
+}
+
 function navigationData(value) {
   if (!value || typeof value !== 'object') return null;
   if (!REQUEST_ID_PATTERN.test(value.requestId)) return null;
@@ -60,16 +86,16 @@ self.addEventListener('push', (event) => {
     if (!isPendingPush(payload)) return;
 
     const windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    const hasForegroundLiveClient = windowClients.some((client) => {
-      const state = liveClientState.get(client.id);
-      if (!state || state.pid !== payload.pid || !state.webSocketConnected) return false;
+    const foregroundCandidates = windowClients.filter((client) => {
       try {
         return client.visibilityState === 'visible' && new URL(client.url).pathname.startsWith(payload.url);
       } catch {
         return false;
       }
     });
-    if (hasForegroundLiveClient) return;
+    for (const client of foregroundCandidates) {
+      if (await queryLiveClient(client, payload.pid)) return;
+    }
 
     await self.registration.showNotification(payload.title, {
       body: payload.body,
