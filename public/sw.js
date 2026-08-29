@@ -134,20 +134,28 @@ self.addEventListener('push', (event) => {
         }
       }
 
-      await self.registration.showNotification(payload.title, {
-        body: payload.body,
-        tag: payload.requestId,
-        renotify: false,
-        requireInteraction: true,
-        data: {
-          requestId: payload.requestId,
-          pid: payload.pid,
-          url: payload.url,
-        },
-      });
-      queueNotificationReport(reports, payload, 'notification-shown', {
-        clientCount: windowClients.length,
-      });
+      try {
+        await self.registration.showNotification(payload.title, {
+          body: payload.body,
+          tag: payload.requestId,
+          renotify: false,
+          requireInteraction: true,
+          data: {
+            requestId: payload.requestId,
+            pid: payload.pid,
+            url: payload.url,
+          },
+        });
+        queueNotificationReport(reports, payload, 'notification-shown', {
+          clientCount: windowClients.length,
+        });
+      } catch (error) {
+        queueNotificationReport(reports, payload, 'notification-show-failed', {
+          clientCount: windowClients.length,
+          result: 'error',
+        });
+        throw error;
+      }
     } finally {
       await Promise.allSettled(reports);
     }

@@ -6,6 +6,7 @@ const EVENT_NAMES = new Set([
   "push-received",
   "push-suppressed",
   "notification-shown",
+  "notification-show-failed",
   "notification-clicked",
   "client-routing",
   "client-navigated",

@@ -11,7 +11,7 @@ const workerSource = readFileSync(path.resolve(directory, "../public/sw.js"), "u
 
 type Listener = (event: any) => void;
 
-function workerHarness(initialClients: any[] = []) {
+function workerHarness(initialClients: any[] = [], behavior: { showNotification?: (title: string, options: any) => Promise<void> } = {}) {
   const listeners = new Map<string, Listener>();
   const notifications: Array<{ title: string; options: any }> = [];
   const opened: string[] = [];
@@ -21,6 +21,7 @@ function workerHarness(initialClients: any[] = []) {
     registration: {
       scope: "https://tau.example.test/",
       showNotification: async (title: string, options: any) => {
+        if (behavior.showNotification) return behavior.showNotification(title, options);
         notifications.push({ title, options });
       },
     },
@@ -112,6 +113,38 @@ test("root service worker displays a bounded pending-permission push when no for
     "push-received",
     "notification-shown",
   ]);
+});
+
+test("service worker records notification display failures after receiving a valid push", async () => {
+  const harness = workerHarness([], {
+    showNotification: async () => { throw new Error("browser rejected notification"); },
+  });
+  const failingPayload = {
+    ...payload,
+    requestId: "safety-gate-00000000-0000-4000-8000-000000000009",
+    pid: 4109,
+    url: "/i/4109/",
+  };
+
+  await assert.rejects(
+    harness.dispatch("push", { data: { json: () => failingPayload } }),
+    /browser rejected notification/,
+  );
+  assert.deepEqual(harness.diagnosticEvents.map((event) => event.event), [
+    "push-received",
+    "notification-show-failed",
+  ]);
+  assert.deepEqual(harness.diagnosticEvents.at(-1), {
+    schemaVersion: 1,
+    source: "service-worker",
+    event: "notification-show-failed",
+    occurredAt: harness.diagnosticEvents.at(-1).occurredAt,
+    requestId: failingPayload.requestId,
+    pid: failingPayload.pid,
+    targetUrl: failingPayload.url,
+    clientCount: 0,
+    result: "error",
+  });
 });
 
 test("root service worker suppresses a duplicate system alert only for a foreground live Tau client", async () => {
