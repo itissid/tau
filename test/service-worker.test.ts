@@ -11,9 +11,13 @@ const workerSource = readFileSync(path.resolve(directory, "../public/sw.js"), "u
 
 type Listener = (event: any) => void;
 
-function workerHarness(initialClients: any[] = [], behavior: { showNotification?: (title: string, options: any) => Promise<void> } = {}) {
+function workerHarness(initialClients: any[] = [], behavior: {
+  showNotification?: (title: string, options: any) => Promise<void>;
+  openWindow?: (url: string) => Promise<any>;
+} = {}) {
   const listeners = new Map<string, Listener>();
   const notifications: Array<{ title: string; options: any }> = [];
+  const openWindowCalls: string[] = [];
   const opened: string[] = [];
   const diagnosticEvents: any[] = [];
   let windowClients = initialClients;
@@ -29,8 +33,12 @@ function workerHarness(initialClients: any[] = [], behavior: { showNotification?
       claim: async () => undefined,
       matchAll: async () => windowClients,
       openWindow: async (url: string) => {
-        opened.push(url);
-        return { id: "opened-client" };
+        openWindowCalls.push(url);
+        const client = behavior.openWindow
+          ? await behavior.openWindow(url)
+          : { id: "opened-client", url };
+        if (client) opened.push(url);
+        return client;
       },
     },
     addEventListener(type: string, listener: Listener) {
@@ -74,6 +82,7 @@ function workerHarness(initialClients: any[] = [], behavior: { showNotification?
 
   return {
     notifications,
+    openWindowCalls,
     opened,
     diagnosticEvents,
     setClients(value: any[]) { windowClients = value; },
@@ -191,6 +200,59 @@ test("foreground suppression queries a visible page after the service worker res
   const harness = workerHarness([liveClient]);
   await harness.dispatch("push", { data: { json: () => payload } });
   assert.deepEqual(harness.notifications, []);
+});
+
+test("notification click opens the exact route when Firefox reports no clients and a falsy WindowClient", async () => {
+  let attempt = 0;
+  const harness = workerHarness([], {
+    openWindow: async (url) => {
+      attempt += 1;
+      return attempt === 1 ? null : { id: "opened-client", url };
+    },
+  });
+
+  await harness.dispatch("notificationclick", {
+    notification: { data: payload, close() {} },
+  });
+
+  assert.deepEqual(harness.openWindowCalls, [
+    "https://tau.example.test/i/4101/",
+    "https://tau.example.test/i/4101/",
+  ]);
+  assert.deepEqual(harness.opened, ["https://tau.example.test/i/4101/"]);
+  assert.deepEqual(harness.diagnosticEvents.slice(-3).map((event) => event.event), [
+    "notification-clicked",
+    "client-routing",
+    "window-opened",
+  ]);
+});
+
+test("notification click focuses an exact client that appears after a falsy openWindow result", async () => {
+  const clients: any[] = [];
+  const actions: string[] = [];
+  const lateClient = {
+    id: "late-client",
+    url: "https://tau.example.test/i/4101/",
+    async focus() { actions.push("focus"); return this; },
+  };
+  const harness = workerHarness(clients, {
+    openWindow: async () => {
+      clients.push(lateClient);
+      return null;
+    },
+  });
+
+  await harness.dispatch("notificationclick", {
+    notification: { data: payload, close() {} },
+  });
+
+  assert.deepEqual(harness.openWindowCalls, ["https://tau.example.test/i/4101/"]);
+  assert.deepEqual(actions, ["focus"]);
+  assert.deepEqual(harness.diagnosticEvents.slice(-3).map((event) => event.event), [
+    "notification-clicked",
+    "client-routing",
+    "window-opened",
+  ]);
 });
 
 test("notification click navigates or opens the exact terminal-owned Pi instance", async () => {

@@ -54,6 +54,23 @@ function navigationData(value) {
   return { requestId: value.requestId, pid: value.pid, url: value.url };
 }
 
+async function openWindowWithRecovery(targetHref) {
+  const opened = await self.clients.openWindow(targetHref);
+  if (opened) return opened;
+
+  const windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const lateExactClient = windowClients.find((client) => client.url === targetHref);
+  if (lateExactClient?.focus) {
+    try {
+      const focused = await lateExactClient.focus();
+      if (focused) return focused;
+    } catch {
+      // Fall through to one bounded retry while the notification click is active.
+    }
+  }
+  return self.clients.openWindow(targetHref);
+}
+
 function reportNotificationEvent(payload, eventName, details = {}) {
   const body = {
     schemaVersion: 1,
@@ -222,7 +239,7 @@ self.addEventListener('notificationclick', (event) => {
         return;
       }
       operation = 'open-window';
-      const opened = await self.clients.openWindow(target.href);
+      const opened = await openWindowWithRecovery(target.href);
       queueNotificationReport(reports, data, opened ? 'window-opened' : 'routing-failed', {
         clientCount: windowClients.length,
         result: opened ? 'new-window' : 'error',
