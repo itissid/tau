@@ -15,6 +15,7 @@ function workerHarness(initialClients: any[] = []) {
   const listeners = new Map<string, Listener>();
   const notifications: Array<{ title: string; options: any }> = [];
   const opened: string[] = [];
+  const diagnosticEvents: any[] = [];
   let windowClients = initialClients;
   const self = {
     registration: {
@@ -28,7 +29,7 @@ function workerHarness(initialClients: any[] = []) {
       matchAll: async () => windowClients,
       openWindow: async (url: string) => {
         opened.push(url);
-        return undefined;
+        return { id: "opened-client" };
       },
     },
     addEventListener(type: string, listener: Listener) {
@@ -45,7 +46,12 @@ function workerHarness(initialClients: any[] = []) {
       delete: async () => true,
       match: async () => undefined,
     },
-    fetch: async () => new Response("ok"),
+    fetch: async (url: string, options: any) => {
+      if (url === "/api/push/notification-events") {
+        diagnosticEvents.push(JSON.parse(options.body));
+      }
+      return new Response("ok");
+    },
     URL,
     Response,
     Map,
@@ -68,6 +74,7 @@ function workerHarness(initialClients: any[] = []) {
   return {
     notifications,
     opened,
+    diagnosticEvents,
     setClients(value: any[]) { windowClients = value; },
     dispatch,
   };
@@ -101,6 +108,10 @@ test("root service worker displays a bounded pending-permission push when no for
       },
     },
   }]);
+  assert.deepEqual(harness.diagnosticEvents.map((event) => event.event), [
+    "push-received",
+    "notification-shown",
+  ]);
 });
 
 test("root service worker suppresses a duplicate system alert only for a foreground live Tau client", async () => {
@@ -119,6 +130,10 @@ test("root service worker suppresses a duplicate system alert only for a foregro
   });
   await harness.dispatch("push", { data: { json: () => payload } });
   assert.deepEqual(harness.notifications, []);
+  assert.deepEqual(harness.diagnosticEvents.map((event) => event.event), [
+    "push-received",
+    "push-suppressed",
+  ]);
 
   await harness.dispatch("message", {
     source: liveClient,
@@ -166,10 +181,32 @@ test("notification click navigates or opens the exact terminal-owned Pi instance
   });
   assert.deepEqual(actions, ["navigate:https://tau.example.test/i/4101/", "focus"]);
   assert.equal(closed, 1);
+  assert.deepEqual(harness.diagnosticEvents.map((event) => event.event), [
+    "notification-clicked",
+    "client-routing",
+    "client-navigated",
+    "client-focused",
+  ]);
+  assert.deepEqual(harness.diagnosticEvents.at(-1), {
+    schemaVersion: 1,
+    source: "service-worker",
+    event: "client-focused",
+    occurredAt: harness.diagnosticEvents.at(-1).occurredAt,
+    requestId: payload.requestId,
+    pid: payload.pid,
+    targetUrl: payload.url,
+    clientCount: 1,
+    result: "existing-client",
+  });
 
   harness.setClients([]);
   await harness.dispatch("notificationclick", {
     notification: { data: payload, close() {} },
   });
   assert.deepEqual(harness.opened, ["https://tau.example.test/i/4101/"]);
+  assert.deepEqual(harness.diagnosticEvents.slice(-3).map((event) => event.event), [
+    "notification-clicked",
+    "client-routing",
+    "window-opened",
+  ]);
 });

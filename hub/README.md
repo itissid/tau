@@ -12,7 +12,8 @@ The Hub lives in this repository because its routes, registry protocol, browser 
 - `/i/<pid>/ws` tunnels WebSocket Upgrade traffic to the selected mirror's `/ws` endpoint.
 - `/sw.js`, `/manifest.webmanifest`, and root icon routes serve the one origin-wide PWA worker and manifest.
 - `GET /api/push/vapid-public-key` returns only the VAPID public key.
-- `POST` and `DELETE /api/push/subscriptions` add/update or remove the caller's subscription. There is deliberately no public notification-send endpoint.
+- `POST` and `DELETE /api/push/subscriptions` add/update or remove the caller's subscription.
+- `POST /api/push/notification-events` accepts a strict, bounded notification lifecycle record from Tau's service worker or session page. There is no HTTP read route for these records and deliberately no public notification-send endpoint.
 
 Unknown or dead PIDs return `410`. The Hub accepts no caller-supplied upstream host or port and rejects registry records whose host is not loopback.
 
@@ -20,7 +21,7 @@ Unknown or dead PIDs return `410`. The Hub accepts no caller-supplied upstream h
 
 Tau mirrors atomically publish only bounded safety-request routing metadata under `TAU_PENDING_DIR`; markers exclude protected tool input and unrelated prompt content. The Hub polls those local markers, validates each marker against the live PID/start identity, and sends one Web Push per active subscription. Marker removal on approval, denial, cancellation, or Pi shutdown cleans delivery deduplication state. Push responses `404` and `410` remove expired subscriptions.
 
-`TAU_HUB_STATE_DIR` contains one VAPID key pair, subscriptions, and endpoint-hash delivery deduplication. The directory is mode `0700`; files are atomically replaced at mode `0600`. Never print, copy into tracked files, or expose this state through HTTP, logs, result artifacts, or browser configuration.
+`TAU_HUB_STATE_DIR` contains one VAPID key pair, subscriptions, endpoint-hash delivery deduplication, and `notification-events.jsonl`. Notification records correlate only bounded request IDs, PIDs, target routes, browser lifecycle stages, and outcomes; protected tool input, prompts, subscription details, and free-form errors are rejected. The directory is mode `0700`; state files are mode `0600`. Never print or copy VAPID keys, subscriptions, or endpoint hashes into tracked files, logs, result artifacts, or browser configuration. Notification-event excerpts may be inspected locally only after confirming their bounded schema.
 
 ## Runtime boundary
 
