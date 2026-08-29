@@ -1287,7 +1287,7 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
         const files = fs.readdirSync(projectDir).filter(f => f.endsWith(".jsonl"));
         const decodedPath = dir.name.replace(/^--/, "/").replace(/--$/, "").replace(/-/g, "/");
 
-        const sessions: any[] = [];
+        const sessionsByProjectPath = new Map<string, any[]>();
 
         for (const file of files) {
           try {
@@ -1296,15 +1296,19 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
             if (parsed) {
               const stat = fs.statSync(filePath);
               const isTmux = tmuxFiles.has(filePath);
+              // Pi's session-directory encoding is lossy when a real path contains "-";
+              // the persisted session cwd is the authoritative project identity.
+              const projectPath = parsed.cwd || decodedPath;
+              const sessions = sessionsByProjectPath.get(projectPath) || [];
               sessions.push({ ...parsed, file, filePath, mtime: stat.mtimeMs, ...(isTmux && { tmux: true }) });
+              sessionsByProjectPath.set(projectPath, sessions);
             }
           } catch { /* skip */ }
         }
 
-        sessions.sort((a, b) => b.mtime - a.mtime);
-
-        if (sessions.length > 0) {
-          projects.push({ path: decodedPath, dirName: dir.name, sessions });
+        for (const [projectPath, sessions] of sessionsByProjectPath) {
+          sessions.sort((a, b) => b.mtime - a.mtime);
+          projects.push({ path: projectPath, dirName: dir.name, sessions });
         }
       }
 
@@ -1404,14 +1408,14 @@ img{border-radius:12px}a{color:#b87a5c;font-size:18px;margin-top:16px}p{color:rg
     stream.destroy();
 
     if (!header?.id) return null;
-    if (userMessageCount <= 1 && lineCount <= 8) return null; // pipe mode
+    if (userMessageCount === 0) return null;
 
     return {
       id: header.id,
       timestamp: header.timestamp || "",
       name: sessionName,
       firstMessage,
-      cwd: header.cwd || null,
+      cwd: typeof header.cwd === "string" ? header.cwd : null,
     };
   }
 

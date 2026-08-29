@@ -412,12 +412,13 @@ export class SessionSidebar {
     for (const project of this.projects) {
       const group = document.createElement('div');
       group.className = 'project-group';
-      const isCollapsed = this.collapsedProjects.has(project.dirName);
+      const projectKey = JSON.stringify([project.dirName, project.path]);
+      const isCollapsed = this.collapsedProjects.has(projectKey);
 
       const header = document.createElement('div');
       header.className = `project-header${isCollapsed ? ' collapsed' : ''}`;
 
-      const pathParts = project.path.split('/').filter(Boolean);
+      const pathParts = project.path.split(/[\\/]/).filter(Boolean);
       const shortPath = pathParts.length > 0 ? pathParts[pathParts.length - 1] : project.path;
 
       header.innerHTML = `
@@ -427,10 +428,10 @@ export class SessionSidebar {
       `;
 
       header.addEventListener('click', () => {
-        if (this.collapsedProjects.has(project.dirName)) {
-          this.collapsedProjects.delete(project.dirName);
+        if (this.collapsedProjects.has(projectKey)) {
+          this.collapsedProjects.delete(projectKey);
         } else {
-          this.collapsedProjects.add(project.dirName);
+          this.collapsedProjects.add(projectKey);
         }
         header.classList.toggle('collapsed');
         sessionsDiv.classList.toggle('collapsed');

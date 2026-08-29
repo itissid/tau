@@ -117,14 +117,28 @@ test("mirror serves Tau, streams Pi state/events, accepts prompt/abort, and stay
   const agentDir = path.join(home, ".pi", "agent");
   const instancesDir = path.join(home, ".pi", "tau-instances");
   const pendingDir = path.join(home, ".pi", "tau-pending");
+  const sessionsDir = path.join(agentDir, "sessions");
+  const projectSessionsDir = path.join(sessionsDir, "--tmp-tau-browser-project--");
   const logFile = path.join(agentDir, "logs", "tau-test.log");
-  mkdirSync(agentDir, { recursive: true });
+  mkdirSync(projectSessionsDir, { recursive: true });
   writeFileSync(path.join(agentDir, "settings.json"), "{}\n");
+  writeFileSync(path.join(projectSessionsDir, "one-turn.jsonl"), [
+    JSON.stringify({ type: "session", id: "one-turn", timestamp: "2026-08-28T00:00:00.000Z", cwd: "/tmp/tau-browser-project" }),
+    JSON.stringify({ type: "message", message: { role: "user", content: "first prompt" } }),
+    JSON.stringify({ type: "message", message: { role: "assistant", content: "first answer" } }),
+  ].join("\n") + "\n");
+  writeFileSync(path.join(projectSessionsDir, "slash-separated.jsonl"), [
+    JSON.stringify({ type: "session", id: "slash-separated", timestamp: "2026-08-27T00:00:00.000Z", cwd: "/tmp/tau/browser/project" }),
+    JSON.stringify({ type: "message", message: { role: "user", content: "other project" } }),
+  ].join("\n") + "\n");
+  writeFileSync(path.join(projectSessionsDir, "header-only.jsonl"),
+    JSON.stringify({ type: "session", id: "header-only", timestamp: "2026-08-28T00:00:00.000Z", cwd: "/tmp/tau-browser-project" }) + "\n");
   const port = await freePort();
 
   const previousEnvironment = {
     HOME: process.env.HOME,
     PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+    PI_CODING_AGENT_SESSION_DIR: process.env.PI_CODING_AGENT_SESSION_DIR,
     TAU_HOST: process.env.TAU_HOST,
     TAU_MIRROR_PORT: process.env.TAU_MIRROR_PORT,
     TAU_INSTANCES_DIR: process.env.TAU_INSTANCES_DIR,
@@ -134,6 +148,7 @@ test("mirror serves Tau, streams Pi state/events, accepts prompt/abort, and stay
   Object.assign(process.env, {
     HOME: home,
     PI_CODING_AGENT_DIR: agentDir,
+    PI_CODING_AGENT_SESSION_DIR: sessionsDir,
     TAU_HOST: "0.0.0.0",
     TAU_MIRROR_PORT: String(port),
     TAU_INSTANCES_DIR: instancesDir,
@@ -231,6 +246,18 @@ test("mirror serves Tau, streams Pi state/events, accepts prompt/abort, and stay
     const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
     assert.equal(health.mirrorUrl, `http://127.0.0.1:${port}`);
     assert.equal(health.tailscaleUrl, undefined);
+
+    const sessionList = await fetch(`http://127.0.0.1:${port}/api/sessions`).then((response) => response.json());
+    const project = sessionList.projects.find((candidate: any) =>
+      candidate.path === "/tmp/tau-browser-project");
+    assert.equal(project?.dirName, "--tmp-tau-browser-project--");
+    assert.deepEqual(project?.sessions.map((session: any) => session.id), ["one-turn"]);
+    assert.equal(project?.sessions[0]?.firstMessage, "first prompt");
+    const collidingProject = sessionList.projects.find((candidate: any) =>
+      candidate.path === "/tmp/tau/browser/project");
+    assert.deepEqual(collidingProject?.sessions.map((session: any) => session.id), ["slash-separated"]);
+    assert.equal(sessionList.projects.some((candidate: any) =>
+      candidate.sessions.some((session: any) => session.id === "header-only")), false);
 
     const messages: any[] = [];
     ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
