@@ -33,7 +33,8 @@ const dialogHandler = new DialogHandler(document.getElementById('dialog-containe
 // Session sidebar
 const sidebar = new SessionSidebar(
   document.getElementById('session-list'),
-  handleSessionSelect
+  handleSessionSelect,
+  updateCurrentSessionTitle
 );
 
 // UI elements
@@ -46,6 +47,19 @@ const statusText = document.getElementById('status-text');
 const sidebarEl = document.getElementById('sidebar');
 const sidebarToggle = document.getElementById('sidebar-toggle');
 const sidebarOverlay = document.getElementById('sidebar-overlay');
+const currentSessionTitle = document.getElementById('current-session-title');
+const currentSessionTitleLabel = document.getElementById('current-session-title-label');
+
+function updateCurrentSessionTitle(presentation) {
+  const title = presentation?.title || 'Current session';
+  currentSessionTitleLabel.textContent = title;
+  currentSessionTitle.title = presentation ? `Show "${title}" in sessions` : 'No current session';
+  currentSessionTitle.setAttribute(
+    'aria-label',
+    presentation ? `Show current session in sidebar: ${title}` : 'No current session',
+  );
+  currentSessionTitle.disabled = !presentation;
+}
 
 const refreshSessionsBtn = document.getElementById('refresh-sessions-btn');
 const sessionSearchInput = document.getElementById('session-search-input');
@@ -283,13 +297,12 @@ function handleRPCEvent(event) {
     case 'extension_error':
       messageRenderer.renderError(`Extension error: ${event.error}`);
       break;
-    case 'session_name':
-      // Auto-title: update sidebar with new session name
-      if (event.name) {
-        const activeItem = document.querySelector('.session-item.active .session-title');
-        if (activeItem) activeItem.textContent = event.name;
-      }
+    case 'session_name': {
+      // Auto-title events belong to this terminal's live session, even while history is selected.
+      const liveSessionFile = mirrorActiveSessionFile || sidebar.getActiveSessionPresentation()?.filePath;
+      if (event.name && liveSessionFile) sidebar.updateSessionName(liveSessionFile, event.name);
       break;
+    }
   }
 }
 
@@ -1050,19 +1063,28 @@ function updateSidebarToggleIcon() {
   sidebarToggle.textContent = '☰';
 }
 
-function toggleSidebar() {
-  sidebarEl.classList.toggle('collapsed');
-  sidebarOverlay.classList.toggle('visible', !sidebarEl.classList.contains('collapsed') && isMobile());
+function setSidebarOpen(open) {
+  sidebarEl.classList.toggle('collapsed', !open);
+  sidebarOverlay.classList.toggle('visible', open && isMobile());
+  sidebarToggle.setAttribute('aria-expanded', String(open));
+  currentSessionTitle.setAttribute('aria-expanded', String(open));
   updateSidebarToggleIcon();
+}
+
+function toggleSidebar() {
+  setSidebarOpen(sidebarEl.classList.contains('collapsed'));
 }
 
 sidebarToggle.addEventListener('click', toggleSidebar);
 
-sidebarOverlay.addEventListener('click', () => {
-  sidebarEl.classList.add('collapsed');
-  sidebarOverlay.classList.remove('visible');
-  updateSidebarToggleIcon();
+currentSessionTitle.addEventListener('click', () => {
+  sessionSearchInput.value = '';
+  sidebar.setSearchQuery('');
+  setSidebarOpen(true);
+  sidebar.revealActiveSession();
 });
+
+sidebarOverlay.addEventListener('click', () => setSidebarOpen(false));
 
 
 
@@ -1125,10 +1147,7 @@ refreshSessionsBtn.addEventListener('click', () => {
     tracking = false;
     const touch = e.changedTouches[0];
     const dx = touch.clientX - touchStartX;
-    if (dx > 60) {
-      sidebarEl.classList.remove('collapsed');
-      sidebarOverlay.classList.add('visible');
-    }
+    if (dx > 60) setSidebarOpen(true);
   }, { passive: true });
 })();
 
@@ -1144,15 +1163,12 @@ async function newSession() {
   updateTokenUsage();
   await switchSession(null);
   sidebar.clearActive();
-  if (isMobile()) {
-    sidebarEl.classList.add('collapsed');
-    sidebarOverlay.classList.remove('visible');
-  }
+  if (isMobile()) setSidebarOpen(false);
   if (!isMobile()) messageInput.focus();
 }
 
 async function handleSessionSelect(session, project) {
-  sidebar.setActive(session.filePath);
+  sidebar.setActive(session.filePath, session);
   sessionTotalCost = 0;
   lastInputTokens = 0;
   updateCostDisplay();
@@ -1160,10 +1176,7 @@ async function handleSessionSelect(session, project) {
   await switchSession(session.filePath, session, project);
 
   // Close sidebar on mobile after selecting
-  if (isMobile()) {
-    sidebarEl.classList.add('collapsed');
-    sidebarOverlay.classList.remove('visible');
-  }
+  if (isMobile()) setSidebarOpen(false);
 }
 
 async function switchSession(sessionFile, session = null, project = null) {
@@ -1262,8 +1275,18 @@ function handleMirrorSync(data) {
   console.log('[Mirror] Received state snapshot:', data.entries?.length, 'entries');
   isMirrorMode = true;
 
-  // Track the active session
+  // Track the active session by file path; title text is presentation only.
   mirrorActiveSessionFile = data.sessionFile || null;
+  if (data.sessionFile) {
+    const firstUserEntry = data.entries?.find(entry => entry.type === 'message' && entry.message?.role === 'user');
+    sidebar.setActive(data.sessionFile, {
+      filePath: data.sessionFile,
+      name: data.sessionName,
+      firstMessage: firstUserEntry ? getMessageText(firstUserEntry.message) : null,
+    });
+  } else {
+    sidebar.clearActive();
+  }
   viewingActiveSession = true;
   updateMirrorInputState();
   updateMirrorLiveIndicator();
@@ -1887,7 +1910,7 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
 
 // On mobile, move cost + token usage above input
 if (isMobile()) {
-  sidebarEl.classList.add('collapsed');
+  setSidebarOpen(false);
 
   const mobileBar = document.getElementById('mobile-model-bar');
   const sessionCost = document.getElementById('session-cost');

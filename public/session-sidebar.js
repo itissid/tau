@@ -4,11 +4,17 @@
 
 import { apiPath } from './url-base.js';
 
+export function getSessionTitle(session) {
+  return session?.name || session?.firstMessage || 'Empty session';
+}
+
 export class SessionSidebar {
-  constructor(container, onSessionSelect) {
+  constructor(container, onSessionSelect, onActiveSessionChange = () => {}) {
     this.container = container;
     this.onSessionSelect = onSessionSelect;
+    this.onActiveSessionChange = onActiveSessionChange;
     this.activeSessionFile = null;
+    this.activeSessionHint = null;
     this.projects = [];
     this.collapsedProjects = new Set();
     this.searchQuery = '';
@@ -50,7 +56,9 @@ export class SessionSidebar {
       const res = await fetch(apiPath('sessions'));
       const data = await res.json();
       this.projects = data.projects || [];
+      this.applyActiveSessionHint();
       this.render();
+      this.notifyActiveSessionChange();
     } catch (error) {
       console.error('[Sidebar] Failed to load sessions:', error);
       this.container.innerHTML = '<div class="session-loading">Failed to load sessions</div>';
@@ -119,9 +127,10 @@ export class SessionSidebar {
 
       if (result.filePath === this.activeSessionFile) {
         item.classList.add('active');
+        item.setAttribute('aria-current', 'true');
       }
 
-      const title = result.sessionName || result.firstMessage || 'Untitled';
+      const title = getSessionTitle({ name: result.sessionName, firstMessage: result.firstMessage });
       const snippet = result.matches[0]?.snippet || '';
       const matchCount = result.matches.length;
       const time = this.formatTime(result.sessionTimestamp);
@@ -134,8 +143,8 @@ export class SessionSidebar {
         <div class="session-meta">${time}${matchCount > 1 ? ` · ${matchCount} matches` : ''}</div>
       `;
 
-      // Find the matching project/session to pass to onSessionSelect
-      item.addEventListener('click', () => {
+      // Find the matching project/session to pass to onSessionSelect.
+      this.makeSessionItemInteractive(item, () => {
         for (const project of this.projects) {
           const session = project.sessions.find(s => s.filePath === result.filePath);
           if (session) {
@@ -199,16 +208,117 @@ export class SessionSidebar {
     });
   }
 
-  setActive(filePath) {
+  findSession(filePath) {
+    for (const project of this.projects) {
+      const session = project.sessions.find(candidate => candidate.filePath === filePath);
+      if (session) return { session, project };
+    }
+    return null;
+  }
+
+  findActiveSession() {
+    return this.findSession(this.activeSessionFile);
+  }
+
+  getActiveSessionPresentation() {
+    if (!this.activeSessionFile) return null;
+    const match = this.findActiveSession();
+    const session = match?.session || this.activeSessionHint;
+    return {
+      filePath: this.activeSessionFile,
+      title: getSessionTitle(session),
+    };
+  }
+
+  notifyActiveSessionChange() {
+    this.onActiveSessionChange(this.getActiveSessionPresentation());
+  }
+
+  applyActiveSessionHint() {
+    if (!this.activeSessionHint) return;
+    const match = this.findActiveSession();
+    if (!match) return;
+    if (this.activeSessionHint.name) match.session.name = this.activeSessionHint.name;
+    if (!match.session.firstMessage && this.activeSessionHint.firstMessage) {
+      match.session.firstMessage = this.activeSessionHint.firstMessage;
+    }
+  }
+
+  setActive(filePath, session = null) {
+    if (filePath !== this.activeSessionFile) this.activeSessionHint = null;
     this.activeSessionFile = filePath;
+    if (session) this.activeSessionHint = session;
+    this.applyActiveSessionHint();
+    const presentation = this.getActiveSessionPresentation();
     this.container.querySelectorAll('.session-item').forEach(el => {
-      el.classList.toggle('active', el.dataset.filePath === filePath);
+      const isActive = el.dataset.filePath === filePath;
+      el.classList.toggle('active', isActive);
+      if (isActive) {
+        el.setAttribute('aria-current', 'true');
+        const title = el.querySelector('.session-title');
+        if (title && presentation) {
+          title.textContent = presentation.title;
+          title.title = presentation.title;
+        }
+      } else {
+        el.removeAttribute('aria-current');
+      }
     });
+    this.notifyActiveSessionChange();
+  }
+
+  updateSessionName(filePath, name) {
+    if (!filePath || !name) return;
+    const match = this.findSession(filePath);
+    if (match) match.session.name = name;
+    if (filePath === this.activeSessionFile) {
+      this.activeSessionHint = {
+        ...(this.activeSessionHint || {}),
+        filePath,
+        name,
+      };
+    }
+    this.container.querySelectorAll('.session-item').forEach(item => {
+      if (item.dataset.filePath !== filePath) return;
+      const title = item.querySelector('.session-title');
+      if (title) {
+        title.textContent = name;
+        title.title = name;
+      }
+    });
+    if (filePath === this.activeSessionFile) this.notifyActiveSessionChange();
   }
 
   clearActive() {
     this.activeSessionFile = null;
-    this.container.querySelectorAll('.session-item').forEach(el => el.classList.remove('active'));
+    this.activeSessionHint = null;
+    this.container.querySelectorAll('.session-item').forEach(el => {
+      el.classList.remove('active');
+      el.removeAttribute('aria-current');
+    });
+    this.notifyActiveSessionChange();
+  }
+
+  projectKey(project) {
+    return JSON.stringify([project.dirName, project.path]);
+  }
+
+  revealActiveSession() {
+    const match = this.findActiveSession();
+    if (!match) return false;
+
+    const projectKey = this.projectKey(match.project);
+    if (this.collapsedProjects.delete(projectKey)) this.render();
+
+    const projectGroup = Array.from(this.container.querySelectorAll('.project-group'))
+      .find(group => group.dataset.projectKey === projectKey);
+    const activeItem = Array.from(projectGroup?.querySelectorAll('.session-item') || [])
+      .find(item => item.dataset.filePath === this.activeSessionFile);
+    if (!activeItem) return false;
+
+    activeItem.focus({ preventScroll: true });
+    activeItem.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    return true;
   }
 
   // ═══════════════════════════════════════
@@ -285,10 +395,11 @@ export class SessionSidebar {
           });
         } catch { /* silent */ }
       }
+      const resolvedName = newName || currentName;
       const newTitle = document.createElement('div');
       newTitle.className = 'session-title';
-      newTitle.title = newName || currentName;
-      newTitle.textContent = newName || currentName;
+      newTitle.title = resolvedName;
+      newTitle.textContent = resolvedName;
       input.replaceWith(newTitle);
     };
 
@@ -343,6 +454,20 @@ export class SessionSidebar {
   // Render
   // ═══════════════════════════════════════
 
+  makeSessionItemInteractive(item, onActivate) {
+    item.setAttribute('role', 'button');
+    item.tabIndex = 0;
+    item.addEventListener('click', (event) => {
+      if (event.target.closest?.('.session-rename-input')) return;
+      onActivate();
+    });
+    item.addEventListener('keydown', (event) => {
+      if (event.target !== item || (event.key !== 'Enter' && event.key !== ' ')) return;
+      event.preventDefault();
+      onActivate();
+    });
+  }
+
   buildSessionItem(session, project) {
     const item = document.createElement('div');
     item.className = 'session-item';
@@ -350,9 +475,10 @@ export class SessionSidebar {
 
     if (session.filePath === this.activeSessionFile) {
       item.classList.add('active');
+      item.setAttribute('aria-current', 'true');
     }
 
-    const title = session.name || session.firstMessage || 'Empty session';
+    const title = getSessionTitle(session);
     const time = this.formatTime(session.timestamp);
     const tmuxTag = session.tmux ? '<span class="session-tag tmux-tag">tmux</span>' : '';
     const favIcon = this.isFavourite(session.filePath) ? '<span class="session-fav-icon">★</span>' : '';
@@ -366,7 +492,7 @@ export class SessionSidebar {
       <div class="session-meta">${time}</div>
     `;
 
-    item.addEventListener('click', () => this.onSessionSelect(session, project));
+    this.makeSessionItemInteractive(item, () => this.onSessionSelect(session, project));
     item.addEventListener('contextmenu', (e) => this.showContextMenu(e, session, project, item));
 
     return item;
@@ -412,8 +538,9 @@ export class SessionSidebar {
     for (const project of this.projects) {
       const group = document.createElement('div');
       group.className = 'project-group';
-      const projectKey = JSON.stringify([project.dirName, project.path]);
+      const projectKey = this.projectKey(project);
       const isCollapsed = this.collapsedProjects.has(projectKey);
+      group.dataset.projectKey = projectKey;
 
       const header = document.createElement('div');
       header.className = `project-header${isCollapsed ? ' collapsed' : ''}`;

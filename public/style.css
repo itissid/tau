@@ -619,6 +619,7 @@ body {
 
 .session-item.active {
   background: var(--bg-glass-hover);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .session-item.hidden { display: none; }
@@ -856,6 +857,36 @@ body {
   align-items: center;
   gap: 10px;
   -webkit-app-region: no-drag;
+}
+
+.current-session-title {
+  display: none;
+  min-width: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.current-session-title:hover {
+  background: var(--bg-glass-hover);
+}
+
+.current-session-title:disabled {
+  cursor: default;
+  color: var(--text-dim);
+}
+
+.current-session-title span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-toggle,
@@ -3172,11 +3203,25 @@ body.hide-thinking .thinking-block { display: none !important; }
   }
 
   .header-left {
+    flex: 1;
+    min-width: 0;
     gap: 6px;
   }
 
   .header-right {
+    flex-shrink: 0;
     gap: 6px;
+  }
+
+  .current-session-title {
+    display: flex;
+    flex: 1 1 120px;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .status-text {
+    display: none;
   }
 
 
@@ -3304,6 +3349,7 @@ body.hide-thinking .thinking-block { display: none !important; }
   .input-icon-btn,
   .settings-close,
   .sidebar-toggle,
+  .current-session-title,
   .settings-btn {
     min-width: 44px;
     min-height: 44px;

@@ -10,6 +10,7 @@ Everything customised for mobile (≤768px) compared to the desktop experience.
 
 ## Header
 - **Slimmed down** — tighter padding (6px 12px), reduced gaps
+- **Current session navigation** — the active session title opens the sidebar, expands its project, and focuses the active item
 - **Model picker stays in header** — alongside thinking button
 - **Cost + token usage moved above input** — collapsible via chevron toggle, starts collapsed
 
