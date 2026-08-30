@@ -48,13 +48,22 @@ test("Tau confirmation dialogs preserve request identity and can be dismissed by
   const container = new FakeElement();
   container.classList.add("hidden");
   const sent: unknown[] = [];
+  const shown: string[] = [];
+  const responded: Array<{ id: string; response: unknown }> = [];
   globalThis.document = {
     createElement: () => new FakeElement(),
     getElementById: () => null,
   } as any;
 
   try {
-    const dialogs = new DialogHandler(container as any, { send: (message: unknown) => sent.push(message) });
+    const dialogs = new DialogHandler(
+      container as any,
+      { send: (message: unknown) => sent.push(message) },
+      {
+        onShown: (id: string) => shown.push(id),
+        onResponded: (id: string, response: unknown) => responded.push({ id, response }),
+      },
+    );
     dialogs.showConfirm({
       id: "safety-gate-browser-approve",
       title: "Safety approval",
@@ -69,6 +78,11 @@ test("Tau confirmation dialogs preserve request identity and can be dismissed by
       confirmed: true,
     }]);
     assert.equal(container.classList.contains("hidden"), true);
+    assert.deepEqual(shown, ["safety-gate-browser-approve"]);
+    assert.deepEqual(responded, [{
+      id: "safety-gate-browser-approve",
+      response: { confirmed: true },
+    }]);
 
     dialogs.showConfirm({
       id: "safety-gate-browser-deny",

@@ -4,6 +4,10 @@ import * as net from "node:net";
 import * as path from "node:path";
 
 import type { TauInstanceInfo } from "../extensions/registry.ts";
+import {
+  type NotificationEventLog,
+  parseNotificationLifecycleEvent,
+} from "./notification-events.ts";
 import type { HubPushState } from "./push-state.ts";
 
 export interface LiveTauRegistry {
@@ -15,6 +19,7 @@ export interface TauHubOptions {
   upstreamTimeoutMs?: number;
   sessionListTimeoutMs?: number;
   pushState?: HubPushState;
+  notificationEventLog?: NotificationEventLog;
   rootAssetsDirectory?: string;
 }
 
@@ -122,8 +127,38 @@ async function handlePushRoute(
   response: http.ServerResponse,
   pathname: string,
   pushState: HubPushState | undefined,
+  notificationEventLog: NotificationEventLog | undefined,
 ): Promise<boolean> {
   if (!pathname.startsWith("/api/push/")) return false;
+
+  if (pathname === "/api/push/notification-events") {
+    if (request.method !== "POST") {
+      writeJson(response, 405, { error: "Method not allowed" }, { Allow: "POST" });
+      return true;
+    }
+    if (!notificationEventLog) {
+      writeJson(response, 404, { error: "Tau Hub notification diagnostics are not configured" });
+      return true;
+    }
+    let event;
+    try {
+      event = parseNotificationLifecycleEvent(await readJsonBody(request));
+    } catch (error) {
+      const statusCode = (error as { statusCode?: number }).statusCode ?? 400;
+      writeJson(response, statusCode, {
+        error: statusCode === 413 ? "Request body is too large" : "Invalid notification event",
+      });
+      return true;
+    }
+    try {
+      notificationEventLog.append(event);
+      writeJson(response, 202, { ok: true });
+    } catch {
+      writeJson(response, 500, { error: "Notification event could not be recorded" });
+    }
+    return true;
+  }
+
   if (!pushState) {
     writeJson(response, 404, { error: "Tau Hub push is not configured" });
     return true;
@@ -355,7 +390,13 @@ export function createTauHubServer(options: TauHubOptions): http.Server {
 
     if (serveRootAsset(response, url.pathname, options.rootAssetsDirectory)) return;
     if (url.pathname.startsWith("/api/push/")) {
-      void handlePushRoute(request, response, url.pathname, options.pushState);
+      void handlePushRoute(
+        request,
+        response,
+        url.pathname,
+        options.pushState,
+        options.notificationEventLog,
+      );
       return;
     }
 

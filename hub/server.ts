@@ -6,6 +6,7 @@ import webpush from "web-push";
 import { PendingRequestMarkerStore } from "../extensions/pending-request-markers.ts";
 import { TauInstanceRegistry } from "../extensions/registry.ts";
 import { createTauHubServer } from "./hub.ts";
+import { NotificationEventLog } from "./notification-events.ts";
 import { PushDeliveryCoordinator } from "./push-delivery.ts";
 import { HubPushState } from "./push-state.ts";
 import { createWebPushSender } from "./web-push-sender.ts";
@@ -35,6 +36,7 @@ const markerStore = new PendingRequestMarkerStore();
 const pushState = new HubPushState(stateDirectory, {
   generateVapidKeys: () => webpush.generateVAPIDKeys(),
 });
+const notificationEventLog = new NotificationEventLog(stateDirectory);
 const pushDelivery = new PushDeliveryCoordinator({
   registry,
   markerStore,
@@ -44,6 +46,7 @@ const pushDelivery = new PushDeliveryCoordinator({
 const server = createTauHubServer({
   registry,
   pushState,
+  notificationEventLog,
   rootAssetsDirectory,
 });
 

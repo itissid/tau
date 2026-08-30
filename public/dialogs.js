@@ -3,9 +3,10 @@
  */
 
 export class DialogHandler {
-  constructor(container, wsClient) {
+  constructor(container, wsClient, diagnostics = {}) {
     this.container = container;
     this.wsClient = wsClient;
+    this.diagnostics = diagnostics;
     this.currentDialog = null;
     this.currentRequestId = null;
     this.timeoutId = null;
@@ -170,6 +171,7 @@ export class DialogHandler {
     this.container.innerHTML = '';
     this.container.appendChild(dialogElement);
     this.container.classList.remove('hidden');
+    this.diagnostics.onShown?.(requestId);
 
     // Set up timeout if specified
     if (timeout) {
@@ -205,6 +207,7 @@ export class DialogHandler {
       id,
       ...response
     });
+    this.diagnostics.onResponded?.(id, response);
     return true;
   }
 

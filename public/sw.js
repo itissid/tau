@@ -54,6 +54,49 @@ function navigationData(value) {
   return { requestId: value.requestId, pid: value.pid, url: value.url };
 }
 
+async function openWindowWithRecovery(targetHref) {
+  const opened = await self.clients.openWindow(targetHref);
+  if (opened) return opened;
+
+  const windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const lateExactClient = windowClients.find((client) => client.url === targetHref);
+  if (lateExactClient?.focus) {
+    try {
+      const focused = await lateExactClient.focus();
+      if (focused) return focused;
+    } catch {
+      // Fall through to one bounded retry while the notification click is active.
+    }
+  }
+  return self.clients.openWindow(targetHref);
+}
+
+function reportNotificationEvent(payload, eventName, details = {}) {
+  const body = {
+    schemaVersion: 1,
+    source: 'service-worker',
+    event: eventName,
+    occurredAt: new Date().toISOString(),
+    requestId: payload.requestId,
+    pid: payload.pid,
+    targetUrl: payload.url,
+    ...details,
+  };
+  try {
+    return Promise.resolve(fetch('/api/push/notification-events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })).then(() => undefined, () => undefined);
+  } catch {
+    return Promise.resolve();
+  }
+}
+
+function queueNotificationReport(reports, payload, eventName, details) {
+  reports.push(reportNotificationEvent(payload, eventName, details));
+}
+
 self.addEventListener('install', () => {
   self.skipWaiting();
 });
@@ -85,29 +128,54 @@ self.addEventListener('push', (event) => {
     }
     if (!isPendingPush(payload)) return;
 
-    const windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    const foregroundCandidates = windowClients.filter((client) => {
-      try {
-        return client.visibilityState === 'visible' && new URL(client.url).pathname.startsWith(payload.url);
-      } catch {
-        return false;
+    const reports = [];
+    queueNotificationReport(reports, payload, 'push-received');
+    try {
+      const windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      const foregroundCandidates = windowClients.filter((client) => {
+        try {
+          return client.visibilityState === 'visible' && new URL(client.url).pathname.startsWith(payload.url);
+        } catch {
+          return false;
+        }
+      });
+      for (const client of foregroundCandidates) {
+        if (await queryLiveClient(client, payload.pid)) {
+          queueNotificationReport(reports, payload, 'push-suppressed', {
+            clientCount: windowClients.length,
+            result: 'foreground-client',
+            visibilityState: client.visibilityState,
+            webSocketConnected: true,
+          });
+          return;
+        }
       }
-    });
-    for (const client of foregroundCandidates) {
-      if (await queryLiveClient(client, payload.pid)) return;
-    }
 
-    await self.registration.showNotification(payload.title, {
-      body: payload.body,
-      tag: payload.requestId,
-      renotify: false,
-      requireInteraction: true,
-      data: {
-        requestId: payload.requestId,
-        pid: payload.pid,
-        url: payload.url,
-      },
-    });
+      try {
+        await self.registration.showNotification(payload.title, {
+          body: payload.body,
+          tag: payload.requestId,
+          renotify: false,
+          requireInteraction: true,
+          data: {
+            requestId: payload.requestId,
+            pid: payload.pid,
+            url: payload.url,
+          },
+        });
+        queueNotificationReport(reports, payload, 'notification-shown', {
+          clientCount: windowClients.length,
+        });
+      } catch (error) {
+        queueNotificationReport(reports, payload, 'notification-show-failed', {
+          clientCount: windowClients.length,
+          result: 'error',
+        });
+        throw error;
+      }
+    } finally {
+      await Promise.allSettled(reports);
+    }
   })());
 });
 
@@ -116,30 +184,76 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil((async () => {
     const data = navigationData(event.notification.data);
     if (!data) return;
-    const target = new URL(data.url, self.registration.scope);
-    const scope = new URL(self.registration.scope);
-    if (target.origin !== scope.origin || target.pathname !== data.url) return;
 
-    const windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    const exactClient = windowClients.find((client) => client.url === target.href);
-    if (exactClient) {
-      await exactClient.focus();
-      return;
-    }
+    const reports = [];
+    queueNotificationReport(reports, data, 'notification-clicked');
+    let operation;
+    try {
+      const target = new URL(data.url, self.registration.scope);
+      const scope = new URL(self.registration.scope);
+      if (target.origin !== scope.origin || target.pathname !== data.url) return;
 
-    const sameOriginClient = windowClients.find((client) => {
-      try {
-        return new URL(client.url).origin === target.origin;
-      } catch {
-        return false;
+      const windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      const exactClient = windowClients.find((client) => client.url === target.href);
+      if (exactClient) {
+        queueNotificationReport(reports, data, 'client-routing', {
+          clientCount: windowClients.length,
+          result: 'existing-client',
+        });
+        operation = 'focus';
+        const focused = await exactClient.focus();
+        queueNotificationReport(reports, data, focused ? 'client-focused' : 'routing-failed', {
+          clientCount: windowClients.length,
+          result: focused ? 'existing-client' : 'error',
+          ...(!focused ? { operation } : {}),
+        });
+        return;
       }
-    });
-    if (sameOriginClient?.navigate) {
-      const navigated = await sameOriginClient.navigate(target.href);
-      await (navigated ?? sameOriginClient).focus();
-      return;
+
+      const sameOriginClient = windowClients.find((client) => {
+        try {
+          return new URL(client.url).origin === target.origin;
+        } catch {
+          return false;
+        }
+      });
+      queueNotificationReport(reports, data, 'client-routing', {
+        clientCount: windowClients.length,
+        result: sameOriginClient?.navigate ? 'existing-client' : 'new-window',
+      });
+      if (sameOriginClient?.navigate) {
+        operation = 'navigate';
+        const navigated = await sameOriginClient.navigate(target.href);
+        queueNotificationReport(reports, data, navigated ? 'client-navigated' : 'routing-failed', {
+          clientCount: windowClients.length,
+          result: navigated ? 'existing-client' : 'error',
+          ...(!navigated ? { operation } : {}),
+        });
+        operation = 'focus';
+        const focused = await (navigated ?? sameOriginClient).focus();
+        queueNotificationReport(reports, data, focused ? 'client-focused' : 'routing-failed', {
+          clientCount: windowClients.length,
+          result: focused ? 'existing-client' : 'error',
+          ...(!focused ? { operation } : {}),
+        });
+        return;
+      }
+      operation = 'open-window';
+      const opened = await openWindowWithRecovery(target.href);
+      queueNotificationReport(reports, data, opened ? 'window-opened' : 'routing-failed', {
+        clientCount: windowClients.length,
+        result: opened ? 'new-window' : 'error',
+        ...(!opened ? { operation } : {}),
+      });
+    } catch {
+      queueNotificationReport(reports, data, 'routing-failed', {
+        operation,
+        result: 'error',
+      });
+      throw new Error('Tau notification routing failed');
+    } finally {
+      await Promise.allSettled(reports);
     }
-    await self.clients.openWindow(target.href);
   })());
 });
 

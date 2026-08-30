@@ -12,6 +12,7 @@ import { themes, applyTheme, getCurrentTheme } from './themes.js';
 import { FileBrowser, getFileIcon } from './file-browser.js';
 import { Launcher } from './launcher.js';
 import { PushNotificationController } from './push-notifications.js';
+import { reportNotificationLifecycleEvent } from './notification-events.js';
 import {
   apiPath,
   currentWebSocketUrl,
@@ -28,7 +29,18 @@ const wsClient = new WebSocketClient(wsUrl);
 const state = new StateManager();
 const messageRenderer = new MessageRenderer(document.getElementById('messages'));
 const toolCardRenderer = new ToolCardRenderer(document.getElementById('messages'));
-const dialogHandler = new DialogHandler(document.getElementById('dialog-container'), wsClient);
+const dialogHandler = new DialogHandler(
+  document.getElementById('dialog-container'),
+  wsClient,
+  {
+    onShown: (requestId) => reportPageNotificationEvent('pending-dialog-shown', requestId),
+    onResponded: (requestId, response) => reportPageNotificationEvent(
+      'pending-dialog-response',
+      requestId,
+      response.confirmed === true ? 'approve' : response.confirmed === false ? 'deny' : 'cancel',
+    ),
+  },
+);
 
 // Session sidebar
 const sidebar = new SessionSidebar(
@@ -81,6 +93,12 @@ navigator.serviceWorker?.addEventListener('message', (event) => {
   if (pid === null || event.data.pid !== pid) return;
   event.ports[0]?.postMessage({ webSocketConnected: wsClient.ws?.readyState === WebSocket.OPEN });
 });
+
+function reportPageNotificationEvent(event, requestId, result) {
+  const pid = instancePid();
+  if (pid === null) return;
+  void reportNotificationLifecycleEvent({ event, requestId, pid, result });
+}
 
 // State tracking
 let currentStreamingElement = null;
@@ -220,7 +238,10 @@ function showNewMessageBadge() {
 wsClient.addEventListener('connected', () => {
   updateConnectionStatus('connected');
   const pid = instancePid();
-  if (pid !== null) notificationController.reportWebSocketState(pid, true);
+  if (pid !== null) {
+    notificationController.reportWebSocketState(pid, true);
+    void reportNotificationLifecycleEvent({ event: 'session-connected', pid });
+  }
   // Fetch model context window size for token % display
   setTimeout(fetchContextWindow, 1000);
 
