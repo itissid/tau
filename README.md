@@ -2,7 +2,7 @@
 
 > This is the [`itissid/tau`](https://github.com/itissid/tau) fork. It preserves Tau's terminal-owned session model and existing web interface while adding terminal-safe logging, loopback defaults, registry hardening, reverse-proxy path support, optional remote safety confirmations, and root-scope PWA/Web Push support for a compatible Tau Hub. See [FORK.md](FORK.md).
 
-A web UI that mirrors your [Pi](https://github.com/badlogic/pi-mono) terminal session in the browser. No separate server — it runs as a Pi extension inside your existing process.
+The Tau Browser Client mirrors your terminal-owned [Pi](https://github.com/badlogic/pi-mono) session in the browser. For direct access, the Tau Extension runs inside the owning Pi process, so no separate process is required. See [`CONTEXT.md`](CONTEXT.md) for canonical terminology.
 
 ![Tau dark mode](docs/images/dark.png)
 
@@ -14,13 +14,13 @@ A web UI that mirrors your [Pi](https://github.com/badlogic/pi-mono) terminal se
 
 ## What it does
 
-Tau connects to your running Pi TUI and gives you a second view in the browser. Same session, same messages, same tools — just a different screen. Type in the terminal or the browser, both stay in sync.
+The Tau Browser Client attaches to a Tau Mirror owned by your running Pi process and gives you a second view in the browser. Same session, same messages, same tools — just a different screen. Type in the terminal or the browser, both stay in sync.
 
 - **Live mirroring** — streams messages, tool calls, and thinking blocks in real-time
 - **Works on any device** — open it on your phone, tablet, or another monitor
 - **Session browser** — view history from any past session
-- **No extra process for direct use** — the Pi extension *is* the per-session mirror server
-- **Optional Tau Hub** — a separately managed single-origin proxy can discover and route several terminal-owned mirrors; see [`hub/README.md`](hub/README.md)
+- **No extra process for direct use** — the Tau Extension owns one process-scoped mirror for the Pi process's current session
+- **Optional Tau Hub** — a separately managed single-origin proxy can discover and route several terminal-owned Tau Mirrors; see [`hub/README.md`](hub/README.md)
 
 ## Install
 
@@ -87,7 +87,7 @@ Type `/qr` in the terminal to show a QR code and scan it to access via your phon
 - One root-scope service worker, with automatic removal of stale per-instance registrations
 - Explicit notification opt-in and clear enabled, denied, unavailable, and unsupported states
 - Background safety-permission alerts when used with a compatible Tau Hub Web Push service
-- Notification taps return to the exact `/i/<pid>/` terminal-owned session
+- Notification taps return to the exact PID-scoped Tau Mirror at `/i/<pid>/`
 - Custom app icons and network-first runtime caching
 
 ## Configuration
@@ -144,18 +144,26 @@ You can still start it manually with `/tau-start` in that session.
 
 ## How it works
 
-Tau is a [Pi extension](https://github.com/badlogic/pi-mono#extensions) that starts an HTTP + WebSocket server inside the Pi process. The extension subscribes to all Pi events and forwards them to connected browser clients. Commands from the browser are executed via the extension API against the same agent session.
+The Tau Extension is a [Pi extension](https://github.com/badlogic/pi-mono#extensions) that starts an HTTP + WebSocket server inside the Pi process. It subscribes to Pi events and forwards them to connected Tau Browser Clients. Commands from a browser client are executed through the extension API against the same terminal-owned Pi session.
 
-```
-┌─────────────┐     ┌──────────────────────────────┐     ┌─────────────┐
-│  Pi TUI     │     │  Pi Process                  │     │  Browser    │
-│  (terminal) │◄───►│                              │◄───►│  (Tau)      │
-│             │     │  tau extension               │     │             │
-└─────────────┘     │    ↳ HTTP + WS on :3001      │     └─────────────┘
-                    └──────────────────────────────┘
+```mermaid
+flowchart LR
+    B["Tau Browser Client"]
+    TS["Tailscale node<br/>Serve edge"]
+    H["Tau Hub<br/>(separate process/container)"]
+    P["Pi process<br/>Tau Extension<br/>Tau Mirror HTTP + WebSocket server"]
+    T["Pi TUI<br/>(terminal)"]
+
+    B <-->|"HTTPS + WSS over the tailnet"| TS
+    TS <-->|"Deployment-local HTTP + WebSocket proxy"| H
+    H <-->|"/i/&lt;pid&gt;/* to the published loopback mirror port"| P
+    P <-->|"Pi events + extension API (in process)"| T
+    B -.->|"Optional direct HTTP + WebSocket (:3001)"| P
 ```
 
-There's no separate server to run. The extension auto-loads when Pi starts and shuts down when Pi exits.
+For direct use, no Hub or Tailscale component is required. The Tau Extension auto-loads when Pi starts, owns the process-scoped Tau Mirror, and shuts it down when Pi exits.
+
+For Hub-mediated remote access, the Tailscale node/Serve edge and Tau Hub are separately managed components. The Deployment Adapter decides their exact process and container placement. Tau Hub must be able to reach the Tau Mirrors' loopback listeners and validate their owning PIDs, which normally means sharing the Pi container's network and PID namespaces. Tau Hub may therefore run alongside Tailscale in one deployment, but it does not run *inside* Tailscale Serve.
 
 ## Development
 
